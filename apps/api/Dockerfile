@@ -14,6 +14,5 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/apps/api/package.json ./package.json
 COPY --from=build /app/apps/api/dist ./dist
 COPY --from=build /app/apps/api/prisma ./prisma
-COPY --from=build /app/apps/api/node_modules/.prisma ./node_modules/.prisma
 EXPOSE 3000
 CMD ["sh", "-c", "npx prisma migrate deploy --schema prisma/schema.prisma && npx tsx prisma/seed.ts && node dist/server.js"]
