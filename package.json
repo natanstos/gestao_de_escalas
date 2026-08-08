@@ -1,0 +1,18 @@
+{
+  "name": "gestao-de-escalas",
+  "private": true,
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "concurrently -n api,web -c cyan,green \"npm run dev -w @escala/api\" \"npm run dev -w @escala/web\"",
+    "build": "npm run build -w @escala/api && npm run build -w @escala/web",
+    "test": "npm run test -w @escala/api && npm run test -w @escala/web",
+    "lint": "npm run lint -w @escala/api && npm run lint -w @escala/web",
+    "db:generate": "npm run db:generate -w @escala/api",
+    "db:migrate": "npm run db:migrate -w @escala/api",
+    "db:seed": "npm run db:seed -w @escala/api"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.0"
+  },
+  "engines": { "node": ">=22" }
+}

@@ -1,0 +1,214 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ScheduleStatus {
+  DRAFT
+  REVIEW
+  PUBLISHED
+  ARCHIVED
+}
+enum AssignmentStatus {
+  PENDING
+  CONFIRMED
+  DECLINED
+  REPLACED
+  PRESENT
+  ABSENT
+}
+enum RuleSeverity {
+  REQUIRED
+  PREFERRED
+  INFO
+}
+enum RuleType {
+  ALLOWED_ROLE
+  REQUIRED_ROLE
+  MAX_ASSIGNMENTS
+  MIN_DAYS_OFF
+  MIN_INTERVAL
+  ALLOWED_DAYS
+  ROTATE_STATIONS
+  BALANCE_LOAD
+  AVOID_CONSECUTIVE
+  REQUIRED_PAIR
+  FORBIDDEN_PAIR
+}
+
+model Church {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  timezone  String   @default("America/Sao_Paulo")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  workers   Worker[]
+  roles     MinistryRole[]
+  stations  Station[]
+  eventTypes EventType[]
+  events    Event[]
+  schedules Schedule[]
+  rules     DistributionRule[]
+}
+
+model MinistryRole {
+  id           String @id @default(uuid())
+  churchId     String
+  name         String
+  abbreviation String
+  sortOrder    Int    @default(0)
+  active       Boolean @default(true)
+  church       Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  workers      Worker[]
+  @@unique([churchId, name])
+}
+
+model Worker {
+  id             String @id @default(uuid())
+  churchId       String
+  roleId         String
+  fullName       String
+  displayName    String
+  phone          String?
+  email          String?
+  active         Boolean @default(true)
+  monthlyMaximum Int?
+  minimumGapDays Int? @default(2)
+  notes          String?
+  church         Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  role           MinistryRole @relation(fields: [roleId], references: [id])
+  skills         WorkerStation[]
+  availability   Availability[]
+  assignments    Assignment[]
+  @@index([churchId, active])
+}
+
+model Station {
+  id              String @id @default(uuid())
+  churchId        String
+  name            String
+  sortOrder       Int @default(0)
+  defaultQuantity Int @default(1)
+  active           Boolean @default(true)
+  church           Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  skills           WorkerStation[]
+  requirements     EventRequirement[]
+  assignments      Assignment[]
+  @@unique([churchId, name])
+}
+
+model WorkerStation {
+  workerId  String
+  stationId String
+  enabled   Boolean @default(true)
+  preference Int @default(0)
+  worker    Worker @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  station   Station @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  @@id([workerId, stationId])
+}
+
+model EventType {
+  id          String @id @default(uuid())
+  churchId    String
+  name        String
+  code        String
+  weekday     Int?
+  defaultTime String?
+  color       String @default("#1E3A5F")
+  active      Boolean @default(true)
+  church      Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  events      Event[]
+  @@unique([churchId, code])
+}
+
+model Event {
+  id          String @id @default(uuid())
+  churchId    String
+  eventTypeId String
+  title       String
+  startsAt    DateTime
+  endsAt      DateTime?
+  canceled    Boolean @default(false)
+  notes       String?
+  church      Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  eventType   EventType @relation(fields: [eventTypeId], references: [id])
+  requirements EventRequirement[]
+  assignments Assignment[]
+  @@index([churchId, startsAt])
+}
+
+model EventRequirement {
+  id        String @id @default(uuid())
+  eventId   String
+  stationId String
+  quantity  Int @default(1)
+  required  Boolean @default(true)
+  event     Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  station   Station @relation(fields: [stationId], references: [id])
+  @@unique([eventId, stationId])
+}
+
+model Availability {
+  id        String @id @default(uuid())
+  workerId  String
+  startsAt  DateTime
+  endsAt    DateTime
+  kind      String
+  reason    String?
+  worker    Worker @relation(fields: [workerId], references: [id], onDelete: Cascade)
+  @@index([workerId, startsAt, endsAt])
+}
+
+model Schedule {
+  id          String @id @default(uuid())
+  churchId    String
+  name        String
+  periodStart DateTime
+  periodEnd   DateTime
+  version     Int @default(1)
+  status      ScheduleStatus @default(DRAFT)
+  publicToken String @unique @default(uuid())
+  publishedAt DateTime?
+  createdAt   DateTime @default(now())
+  church      Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  assignments Assignment[]
+}
+
+model Assignment {
+  id         String @id @default(uuid())
+  scheduleId String
+  eventId    String
+  stationId  String
+  workerId   String
+  origin     String @default("AUTOMATIC")
+  status     AssignmentStatus @default(PENDING)
+  notes      String?
+  schedule   Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  event      Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  station    Station @relation(fields: [stationId], references: [id])
+  worker     Worker @relation(fields: [workerId], references: [id])
+  @@unique([scheduleId, eventId, stationId, workerId])
+}
+
+model DistributionRule {
+  id               String @id @default(uuid())
+  churchId         String
+  name             String
+  description      String?
+  type              RuleType
+  severity          RuleSeverity
+  priority          Int @default(50)
+  active            Boolean @default(true)
+  scope             Json
+  parameters        Json
+  violationMessage String
+  validFrom         DateTime?
+  validUntil        DateTime?
+  church            Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
+  @@index([churchId, active])
+}
