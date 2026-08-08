@@ -84,17 +84,34 @@ app.post("/api/schedules/:id/regenerate", async (req, res, next) => {
     const workers = await prisma.worker.findMany({ where: { churchId: currentChurch.id, active: true }, include: { role: true, availability: true } });
     const counts = new Map<string, number>();
     schedule.assignments.forEach(item => counts.set(item.workerId, (counts.get(item.workerId) ?? 0) + 1));
-    const updates: Array<{ id: string; workerId: string }> = [];
+    const selectedByEvent = new Map<string, Set<string>>();
+    const nextAssignments: Array<{ scheduleId: string; eventId: string; stationId: string; workerId: string; origin: string; status: "PENDING"; notes: string | null }> = [];
     for (const assignment of schedule.assignments) {
-      const candidates = workers.filter(worker => {
+      const selectedWorkers = selectedByEvent.get(assignment.eventId) ?? new Set<string>();
+      selectedByEvent.set(assignment.eventId, selectedWorkers);
+      const eligibleWorkers = workers.filter(worker => {
         const unavailable = worker.availability.some(item => item.kind === "indisponivel" && item.startsAt <= assignment.event.startsAt && item.endsAt >= assignment.event.startsAt);
         const allowedRole = assignment.event.eventType.code !== "SANTA_CEIA" || worker.role.name === "Auxiliar";
-        return worker.id !== assignment.workerId && !unavailable && allowedRole && !updates.some(item => item.workerId === worker.id && schedule.assignments.find(a => a.id === item.id)?.eventId === assignment.eventId);
+        return !unavailable && allowedRole && !selectedWorkers.has(worker.id);
       }).sort((a, b) => (counts.get(a.id) ?? 0) - (counts.get(b.id) ?? 0) || a.displayName.localeCompare(b.displayName));
-      const selected = candidates[0];
-      if (selected) { updates.push({ id: assignment.id, workerId: selected.id }); counts.set(selected.id, (counts.get(selected.id) ?? 0) + 1); }
+      const selected = eligibleWorkers.find(worker => worker.id !== assignment.workerId) ?? eligibleWorkers[0];
+      if (!selected) throw new Error(`Nenhum obreiro elegível para o posto ${assignment.station.name} em ${assignment.event.title}.`);
+      selectedWorkers.add(selected.id);
+      counts.set(selected.id, (counts.get(selected.id) ?? 0) + 1);
+      nextAssignments.push({
+        scheduleId: schedule.id,
+        eventId: assignment.eventId,
+        stationId: assignment.stationId,
+        workerId: selected.id,
+        origin: "AUTOMATIC",
+        status: "PENDING",
+        notes: assignment.notes
+      });
     }
-    await prisma.$transaction(updates.map(update => prisma.assignment.update({ where: { id: update.id }, data: { workerId: update.workerId, status: "PENDING", origin: "AUTOMATIC" } })));
+    await prisma.$transaction(async tx => {
+      await tx.assignment.deleteMany({ where: { scheduleId: schedule.id } });
+      await tx.assignment.createMany({ data: nextAssignments });
+    });
     res.json(await prisma.schedule.findUniqueOrThrow({ where: { id: schedule.id }, include: scheduleInclude }));
   } catch (error) { next(error); }
 });
