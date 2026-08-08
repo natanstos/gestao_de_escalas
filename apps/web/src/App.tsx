@@ -1,14 +1,25 @@
 import { useRef, useState } from "react";
 import { toBlob } from "html-to-image";
-import { AlertTriangle, CalendarDays, Check, ChevronRight, ClipboardList, Download, FileText, LayoutDashboard, Menu, MessageCircle, Plus, RefreshCw, Scale, Settings, Share2, ShieldCheck, Sparkles, Users, X } from "lucide-react";
+import { AlertTriangle, Building2, CalendarDays, Check, ChevronRight, ClipboardList, Download, FileText, LayoutDashboard, Menu, MessageCircle, Plus, RefreshCw, Save, Scale, Search, Settings, Share2, ShieldCheck, Sparkles, UserPlus, Users, X } from "lucide-react";
 import { initialRules, services, type Service } from "./data";
 
-type View = "dashboard" | "schedule" | "rules";
+type View = "dashboard" | "schedule" | "rules" | "workers" | "substitutions" | "settings";
 const nav = [
   { id: "dashboard" as View, label: "Visão geral", icon: LayoutDashboard },
   { id: "schedule" as View, label: "Escalas", icon: CalendarDays },
   { id: "rules" as View, label: "Regras", icon: ShieldCheck }
 ];
+const initialWorkers = [
+  { id: 1, name: "Alexandre (Gelo)", role: "Auxiliar", phone: "(61) 99911-2040", active: true, assignments: 3 },
+  { id: 2, name: "Alexandro Correia", role: "Auxiliar", phone: "(61) 99924-8512", active: true, assignments: 2 },
+  { id: 3, name: "Amaro", role: "Auxiliar", phone: "(61) 99842-3301", active: true, assignments: 3 },
+  { id: 4, name: "Davi Oiticica", role: "Diácono", phone: "(61) 99907-1844", active: true, assignments: 2 },
+  { id: 5, name: "Fernando", role: "Auxiliar", phone: "(61) 99873-6205", active: true, assignments: 4 },
+  { id: 6, name: "Danilo Oiticica", role: "Auxiliar", phone: "(61) 99952-7108", active: true, assignments: 2 },
+  { id: 7, name: "Raniery", role: "Diácono", phone: "(61) 99818-4520", active: true, assignments: 3 },
+  { id: 8, name: "Naldo", role: "Auxiliar", phone: "(61) 99963-1174", active: false, assignments: 1 }
+];
+const titles: Record<View, string> = { dashboard: "Olá, Natanael", schedule: "Escala mensal", rules: "Regras de distribuição", workers: "Obreiros", substitutions: "Substituições", settings: "Configurações" };
 
 export default function App() {
   const [view, setView] = useState<View>("dashboard");
@@ -16,6 +27,7 @@ export default function App() {
   const [mobileMenu, setMobileMenu] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [notice, setNotice] = useState("");
+  const [workers, setWorkers] = useState(initialWorkers);
   const shareRef = useRef<HTMLDivElement>(null);
 
   const navigate = (target: View) => { setView(target); setMobileMenu(false); };
@@ -38,17 +50,20 @@ export default function App() {
     <aside className={mobileMenu ? "sidebar open" : "sidebar"}>
       <div className="brand"><div className="brand-mark"><ClipboardList size={22}/></div><div><strong>EscalaFácil</strong><small>Igreja de Brasília</small></div><button className="close-menu" onClick={() => setMobileMenu(false)} aria-label="Fechar menu"><X/></button></div>
       <nav>{nav.map(({ id, label, icon: Icon }) => <button key={id} className={view === id ? "nav-item active" : "nav-item"} onClick={() => navigate(id)}><Icon size={19}/><span>{label}</span></button>)}
-        <button className="nav-item"><Users size={19}/><span>Obreiros</span></button><button className="nav-item"><RefreshCw size={19}/><span>Substituições</span></button>
+        <button className={view === "workers" ? "nav-item active" : "nav-item"} onClick={() => navigate("workers")}><Users size={19}/><span>Obreiros</span></button><button className={view === "substitutions" ? "nav-item active" : "nav-item"} onClick={() => navigate("substitutions")}><RefreshCw size={19}/><span>Substituições</span></button>
       </nav>
-      <div className="sidebar-bottom"><button className="nav-item"><Settings size={19}/><span>Configurações</span></button><div className="profile"><div className="avatar">NS</div><div><strong>Natanael</strong><small>Administrador</small></div></div></div>
+      <div className="sidebar-bottom"><button className={view === "settings" ? "nav-item active" : "nav-item"} onClick={() => navigate("settings")}><Settings size={19}/><span>Configurações</span></button><div className="profile"><div className="avatar">NS</div><div><strong>Natanael</strong><small>Administrador</small></div></div></div>
     </aside>
     {mobileMenu && <button className="scrim" onClick={() => setMobileMenu(false)} aria-label="Fechar menu"/>}
 
     <main>
-      <header className="topbar"><button className="menu-button" onClick={() => setMobileMenu(true)} aria-label="Abrir menu"><Menu/></button><div><span className="eyebrow">AGOSTO DE 2026</span><h1>{view === "dashboard" ? "Olá, Natanael" : view === "schedule" ? "Escala mensal" : "Regras de distribuição"}</h1></div><button className="primary desktop-action" onClick={() => setShareOpen(true)}><Share2 size={18}/> Compartilhar</button></header>
+      <header className="topbar"><button className="menu-button" onClick={() => setMobileMenu(true)} aria-label="Abrir menu"><Menu/></button><div><span className="eyebrow">IGREJA DE BRASÍLIA</span><h1>{titles[view]}</h1></div><button className="primary desktop-action" onClick={() => setShareOpen(true)}><Share2 size={18}/> Compartilhar</button></header>
       {view === "dashboard" && <Dashboard onNavigate={navigate} onShare={() => setShareOpen(true)}/>}
       {view === "schedule" && <SchedulePage onShare={() => setShareOpen(true)} announce={announce}/>}
       {view === "rules" && <RulesPage rules={rules} setRules={setRules} announce={announce}/>}
+      {view === "workers" && <WorkersPage workers={workers} setWorkers={setWorkers} announce={announce}/>}
+      {view === "substitutions" && <SubstitutionsPage announce={announce}/>}
+      {view === "settings" && <SettingsPage announce={announce}/>}
     </main>
 
     <nav className="bottom-nav">{nav.map(({ id, label, icon: Icon }) => <button key={id} className={view === id ? "active" : ""} onClick={() => navigate(id)}><Icon/><span>{label}</span></button>)}<button onClick={() => setShareOpen(true)}><Share2/><span>Compartilhar</span></button></nav>
@@ -77,6 +92,36 @@ function SchedulePage({ onShare, announce }: { onShare: () => void; announce: (m
 
 function RulesPage({ rules, setRules, announce }: { rules: typeof initialRules; setRules: React.Dispatch<React.SetStateAction<typeof initialRules>>; announce: (m: string) => void }) {
   return <div className="page"><section className="rules-intro"><div><span className="pill"><ShieldCheck size={15}/> Motor de regras</span><h2>As regras trabalham por você.</h2><p>Critérios obrigatórios bloqueiam conflitos. Preferências orientam o gerador quando existem várias opções válidas.</p></div><button className="primary" onClick={() => announce("Editor de nova regra pronto para a próxima etapa.")}><Plus size={18}/> Nova regra</button></section><div className="rule-list">{rules.map(rule => <article className="rule-card" key={rule.id}><div className={`rule-symbol ${rule.kind === "Obrigatória" ? "required" : "preferred"}`}>{rule.icon === "shield" ? <ShieldCheck/> : rule.icon === "balance" ? <Scale/> : rule.icon === "repeat" ? <RefreshCw/> : <CalendarDays/>}</div><div className="rule-copy"><div><h3>{rule.name}</h3><span className={rule.kind === "Obrigatória" ? "tag required" : "tag preferred"}>{rule.kind}</span></div><p>{rule.description}</p></div><label className="switch"><input type="checkbox" checked={rule.active} onChange={() => setRules(current => current.map(item => item.id === rule.id ? { ...item, active: !item.active } : item))}/><span/></label><button className="icon-button"><ChevronRight/></button></article>)}</div></div>;
+}
+
+function WorkersPage({ workers, setWorkers, announce }: { workers: typeof initialWorkers; setWorkers: React.Dispatch<React.SetStateAction<typeof initialWorkers>>; announce: (m: string) => void }) {
+  const [query, setQuery] = useState("");
+  const [formOpen, setFormOpen] = useState(false);
+  const [selected, setSelected] = useState<(typeof initialWorkers)[number] | null>(null);
+  const filtered = workers.filter(worker => `${worker.name} ${worker.role}`.toLowerCase().includes(query.toLowerCase()));
+  const saveWorker = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const name = String(form.get("name") || "").trim();
+    if (!name) return;
+    const worker = { id: selected?.id ?? Date.now(), name, role: String(form.get("role")), phone: String(form.get("phone")), active: selected?.active ?? true, assignments: selected?.assignments ?? 0 };
+    setWorkers(current => selected ? current.map(item => item.id === selected.id ? worker : item) : [...current, worker]);
+    setFormOpen(false); setSelected(null); announce(selected ? "Cadastro atualizado." : "Obreiro adicionado.");
+  };
+  const openEditor = (worker?: (typeof initialWorkers)[number]) => { setSelected(worker ?? null); setFormOpen(true); };
+  return <div className="page"><div className="section-toolbar"><div className="search-box"><Search/><input aria-label="Pesquisar obreiros" placeholder="Pesquisar por nome ou função" value={query} onChange={event => setQuery(event.target.value)}/></div><button className="primary" onClick={() => openEditor()}><UserPlus size={18}/> Novo obreiro</button></div><div className="summary-strip"><span><strong>{workers.filter(w => w.active).length}</strong> ativos</span><span><strong>{workers.filter(w => !w.active).length}</strong> inativos</span><span><strong>{workers.reduce((total,w) => total + w.assignments, 0)}</strong> designações no mês</span></div><section className="table-card"><div className="table-head"><span>Obreiro</span><span>Função</span><span>Telefone</span><span>Escalas</span><span>Status</span></div>{filtered.map(worker => <button className="worker-row" key={worker.id} onClick={() => openEditor(worker)}><div className="worker-name"><div className="avatar small">{worker.name.split(" ").map(part=>part[0]).slice(0,2).join("")}</div><strong>{worker.name}</strong></div><span>{worker.role}</span><span>{worker.phone}</span><strong>{worker.assignments}</strong><span className={worker.active ? "status success" : "status muted"}>{worker.active ? "Ativo" : "Inativo"}</span></button>)}{filtered.length === 0 && <div className="empty-state">Nenhum obreiro encontrado.</div>}</section>
+    {formOpen && <div className="modal-backdrop"><form className="form-modal" onSubmit={saveWorker}><div className="modal-head"><div><span className="eyebrow">CADASTRO</span><h2>{selected ? "Editar obreiro" : "Novo obreiro"}</h2></div><button type="button" className="icon-button" onClick={() => setFormOpen(false)}><X/></button></div><label>Nome de exibição<input name="name" defaultValue={selected?.name} placeholder="Nome usado na escala" autoFocus/></label><div className="form-grid"><label>Função<select name="role" defaultValue={selected?.role ?? "Auxiliar"}><option>Auxiliar</option><option>Diácono</option><option>Presbítero</option></select></label><label>Telefone<input name="phone" defaultValue={selected?.phone} placeholder="(61) 99999-9999"/></label></div><div className="modal-actions">{selected && <button type="button" className="ghost" onClick={() => { setWorkers(current => current.map(item => item.id === selected.id ? {...item,active:!item.active} : item)); setFormOpen(false); announce(selected.active ? "Obreiro inativado." : "Obreiro reativado."); }}>{selected.active ? "Inativar" : "Reativar"}</button>}<button className="primary" type="submit"><Save size={17}/> Salvar</button></div></form></div>}
+  </div>;
+}
+
+function SubstitutionsPage({ announce }: { announce: (m: string) => void }) {
+  const [requests, setRequests] = useState([{ id: 1, from: "Davi Oiticica", to: "Pedro", date: "14/08/2026", station: "Lateral esquerdo", status: "Pendente" }]);
+  return <div className="page"><section className="simple-hero"><div className="stat-icon amber"><RefreshCw/></div><div><span className="eyebrow">TROCAS E IMPREVISTOS</span><h2>Pedidos de substituição</h2><p>Aprove as trocas antes que elas alterem a escala publicada.</p></div></section><section className="table-card substitutions"><div className="table-head"><span>Solicitante</span><span>Substituto</span><span>Data e posto</span><span>Status</span><span>Ações</span></div>{requests.map(request => <div className="substitution-row" key={request.id}><strong>{request.from}</strong><span>{request.to}</span><span>{request.date}<small>{request.station}</small></span><span className="status warning">{request.status}</span><div><button className="ghost" onClick={() => { setRequests(current => current.filter(item => item.id !== request.id)); announce("Substituição recusada."); }}>Recusar</button><button className="secondary" onClick={() => { setRequests(current => current.map(item => item.id === request.id ? {...item,status:"Aprovada"} : item)); announce("Substituição aprovada e registrada."); }}>Aprovar</button></div></div>)}{requests.length === 0 && <div className="empty-state">Não existem solicitações pendentes.</div>}</section></div>;
+}
+
+function SettingsPage({ announce }: { announce: (m: string) => void }) {
+  const [tab, setTab] = useState("geral");
+  return <div className="page settings-page"><div className="settings-tabs"><button className={tab === "geral" ? "active" : ""} onClick={() => setTab("geral")}>Geral</button><button className={tab === "cultos" ? "active" : ""} onClick={() => setTab("cultos")}>Cultos e postos</button><button className={tab === "compartilhar" ? "active" : ""} onClick={() => setTab("compartilhar")}>Compartilhamento</button></div>{tab === "geral" && <form className="settings-card" onSubmit={event => { event.preventDefault(); announce("Configurações gerais salvas."); }}><div className="settings-title"><Building2/><div><h3>Dados da congregação</h3><p>Informações exibidas nas escalas e comunicações.</p></div></div><label>Nome da congregação<input defaultValue="Igreja de Brasília"/></label><div className="form-grid"><label>Fuso horário<select defaultValue="America/Sao_Paulo"><option value="America/Sao_Paulo">Brasília — America/Sao_Paulo</option></select></label><label>Telefone<input placeholder="Telefone institucional"/></label></div><button className="primary save-button"><Save/> Salvar alterações</button></form>}{tab === "cultos" && <section className="settings-card"><div className="settings-title"><CalendarDays/><div><h3>Cultos e postos</h3><p>Defina os horários e a quantidade padrão de vagas.</p></div></div>{[["Domingo","18:00"],["Terça-feira","19:30"],["Sexta-feira","19:30"]].map(item => <div className="config-row" key={item[0]}><strong>{item[0]}</strong><span>{item[1]}</span><button className="ghost" onClick={() => announce(`Editor de ${item[0]} aberto.`)}>Editar</button></div>)}</section>}{tab === "compartilhar" && <form className="settings-card" onSubmit={event => { event.preventDefault(); announce("Preferências de compartilhamento salvas."); }}><div className="settings-title"><Share2/><div><h3>Arte para WhatsApp</h3><p>Escolha como a escala será apresentada ao grupo.</p></div></div><label>Divisão da imagem<select defaultValue="quinzenal"><option value="mensal">Mês completo</option><option value="quinzenal">Por quinzena</option><option value="semanal">Por semana</option></select></label><label className="check-line"><input type="checkbox" defaultChecked/> Exibir QR Code para a versão atualizada</label><label className="check-line"><input type="checkbox" defaultChecked/> Exibir número da versão e data de publicação</label><button className="primary save-button"><Save/> Salvar preferências</button></form>}</div>;
 }
 
 function ShareModal({ shareRef, onClose, onShare, announce }: { shareRef: React.RefObject<HTMLDivElement | null>; onClose: () => void; onShare: () => void; announce: (m: string) => void }) {
