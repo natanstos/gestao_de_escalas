@@ -68,7 +68,7 @@ export default function App() {
     </main>
 
     <nav className="bottom-nav">{nav.map(({ id, label, icon: Icon }) => <button key={id} className={view === id ? "active" : ""} onClick={() => navigate(id)}><Icon/><span>{label}</span></button>)}<button onClick={() => setShareOpen(true)}><Share2/><span>Compartilhar</span></button></nav>
-    {shareOpen && <ShareModal services={scheduleServices} shareRef={shareRef} onClose={() => setShareOpen(false)} onShare={shareImage} announce={announce}/>} 
+    {shareOpen && <ShareModal services={scheduleServices} shareRef={shareRef} onClose={() => setShareOpen(false)} onShare={shareImage} announce={announce}/>}
     {notice && <div className="toast"><Check size={18}/>{notice}</div>}
   </div>;
 }
