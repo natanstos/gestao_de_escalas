@@ -89,7 +89,7 @@ app.post("/api/schedules/:id/regenerate", async (req, res, next) => {
       const candidates = workers.filter(worker => {
         const unavailable = worker.availability.some(item => item.kind === "indisponivel" && item.startsAt <= assignment.event.startsAt && item.endsAt >= assignment.event.startsAt);
         const allowedRole = assignment.event.eventType.code !== "SANTA_CEIA" || worker.role.name === "Auxiliar";
-        return !unavailable && allowedRole && !updates.some(item => item.workerId === worker.id && schedule.assignments.find(a => a.id === item.id)?.eventId === assignment.eventId);
+        return worker.id !== assignment.workerId && !unavailable && allowedRole && !updates.some(item => item.workerId === worker.id && schedule.assignments.find(a => a.id === item.id)?.eventId === assignment.eventId);
       }).sort((a, b) => (counts.get(a.id) ?? 0) - (counts.get(b.id) ?? 0) || a.displayName.localeCompare(b.displayName));
       const selected = candidates[0];
       if (selected) { updates.push({ id: assignment.id, workerId: selected.id }); counts.set(selected.id, (counts.get(selected.id) ?? 0) + 1); }
