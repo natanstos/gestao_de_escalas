@@ -102,6 +102,7 @@ model Station {
   church           Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
   skills           WorkerStation[]
   requirements     EventRequirement[]
+  eventTypeStations EventTypeStation[]
   assignments      Assignment[]
   @@unique([churchId, name])
 }
@@ -127,7 +128,18 @@ model EventType {
   active      Boolean @default(true)
   church      Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
   events      Event[]
+  stations    EventTypeStation[]
   @@unique([churchId, code])
+}
+
+model EventTypeStation {
+  eventTypeId String
+  stationId   String
+  quantity    Int @default(1)
+  enabled     Boolean @default(true)
+  eventType   EventType @relation(fields: [eventTypeId], references: [id], onDelete: Cascade)
+  station     Station @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  @@id([eventTypeId, stationId])
 }
 
 model Event {

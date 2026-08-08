@@ -100,6 +100,81 @@ app.patch("/api/events/:id", async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.get("/api/stations", async (_req, res, next) => {
+  try {
+    const currentChurch = await church();
+    res.json(await prisma.station.findMany({ where: { churchId: currentChurch.id }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }));
+  } catch (error) { next(error); }
+});
+
+const stationInput = z.object({ name: z.string().min(2).max(80), defaultQuantity: z.number().int().min(1).max(10), active: z.boolean().optional().default(true) });
+
+app.post("/api/stations", async (req, res, next) => {
+  try {
+    const currentChurch = await church();
+    const input = stationInput.parse(req.body);
+    const [eventTypes, events, lastStation] = await Promise.all([
+      prisma.eventType.findMany({ where: { churchId: currentChurch.id, active: true } }),
+      prisma.event.findMany({ where: { churchId: currentChurch.id, canceled: false } }),
+      prisma.station.findFirst({ where: { churchId: currentChurch.id }, orderBy: { sortOrder: "desc" } })
+    ]);
+    const station = await prisma.$transaction(async tx => {
+      const created = await tx.station.create({ data: { churchId: currentChurch.id, ...input, sortOrder: (lastStation?.sortOrder ?? -1) + 1 } });
+      await tx.eventTypeStation.createMany({ data: eventTypes.map(eventType => ({ eventTypeId: eventType.id, stationId: created.id, quantity: input.defaultQuantity, enabled: true })) });
+      await tx.eventRequirement.createMany({ data: events.map(event => ({ eventId: event.id, stationId: created.id, quantity: input.defaultQuantity, required: true })) });
+      return created;
+    });
+    res.status(201).json(station);
+  } catch (error) { next(error); }
+});
+
+app.patch("/api/stations/:id", async (req, res, next) => {
+  try {
+    const currentChurch = await church();
+    const existing = await prisma.station.findFirstOrThrow({ where: { id: req.params.id, churchId: currentChurch.id } });
+    const input = stationInput.partial().parse(req.body);
+    const station = await prisma.$transaction(async tx => {
+      const updated = await tx.station.update({ where: { id: existing.id }, data: input });
+      if (input.active === false) {
+        await tx.eventTypeStation.updateMany({ where: { stationId: existing.id }, data: { enabled: false } });
+        await tx.eventRequirement.deleteMany({ where: { stationId: existing.id, event: { churchId: currentChurch.id } } });
+      }
+      return updated;
+    });
+    res.json(station);
+  } catch (error) { next(error); }
+});
+
+app.get("/api/event-types", async (_req, res, next) => {
+  try {
+    const currentChurch = await church();
+    res.json(await prisma.eventType.findMany({ where: { churchId: currentChurch.id, active: true }, include: { stations: { include: { station: true }, orderBy: { station: { sortOrder: "asc" } } } }, orderBy: [{ weekday: "asc" }, { name: "asc" }] }));
+  } catch (error) { next(error); }
+});
+
+app.put("/api/event-types/:id/stations", async (req, res, next) => {
+  try {
+    const currentChurch = await church();
+    const eventType = await prisma.eventType.findFirstOrThrow({ where: { id: req.params.id, churchId: currentChurch.id } });
+    const input = z.object({ positions: z.array(z.object({ stationId: z.string().min(1), enabled: z.boolean(), quantity: z.number().int().min(1).max(10) })) }).parse(req.body);
+    const churchStations = await prisma.station.findMany({ where: { churchId: currentChurch.id, id: { in: input.positions.map(item => item.stationId) } } });
+    if (churchStations.length !== input.positions.length) return res.status(400).json({ message: "Uma ou mais posições são inválidas." });
+    const events = await prisma.event.findMany({ where: { churchId: currentChurch.id, eventTypeId: eventType.id } });
+    await prisma.$transaction(async tx => {
+      for (const position of input.positions) {
+        await tx.eventTypeStation.upsert({ where: { eventTypeId_stationId: { eventTypeId: eventType.id, stationId: position.stationId } }, update: { enabled: position.enabled, quantity: position.quantity }, create: { eventTypeId: eventType.id, stationId: position.stationId, enabled: position.enabled, quantity: position.quantity } });
+        if (position.enabled) {
+          for (const event of events) await tx.eventRequirement.upsert({ where: { eventId_stationId: { eventId: event.id, stationId: position.stationId } }, update: { quantity: position.quantity, required: true }, create: { eventId: event.id, stationId: position.stationId, quantity: position.quantity, required: true } });
+        } else {
+          await tx.eventRequirement.deleteMany({ where: { stationId: position.stationId, eventId: { in: events.map(event => event.id) } } });
+          await tx.assignment.deleteMany({ where: { stationId: position.stationId, eventId: { in: events.map(event => event.id) } } });
+        }
+      }
+    });
+    res.json(await prisma.eventType.findUniqueOrThrow({ where: { id: eventType.id }, include: { stations: { include: { station: true }, orderBy: { station: { sortOrder: "asc" } } } } }));
+  } catch (error) { next(error); }
+});
+
 app.patch("/api/assignments/:id", async (req, res, next) => {
   try {
     const currentChurch = await church();

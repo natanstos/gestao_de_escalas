@@ -26,6 +26,7 @@ async function main() {
   const tuesday = await prisma.eventType.create({ data: { churchId: church.id, name: "Culto de terça-feira", code: "TERCA", weekday: 2, defaultTime: "19:30", color: "#0F766E" } });
   const friday = await prisma.eventType.create({ data: { churchId: church.id, name: "Culto de sexta-feira", code: "SEXTA", weekday: 5, defaultTime: "19:30", color: "#D4A72C" } });
   const supper = await prisma.eventType.create({ data: { churchId: church.id, name: "Santa Ceia", code: "SANTA_CEIA", weekday: 0, defaultTime: "18:00", color: "#7C3AED" } });
+  await prisma.eventTypeStation.createMany({ data: [sunday, tuesday, friday, supper].flatMap(eventType => stations.map(station => ({ eventTypeId: eventType.id, stationId: station.id, quantity: station.defaultQuantity, enabled: true }))) });
   const eventSpecs = [
     ["2026-08-09T21:00:00.000Z", supper, "Santa Ceia"],
     ["2026-08-11T22:30:00.000Z", tuesday, "Culto de terça-feira"],
