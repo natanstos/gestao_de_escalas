@@ -1,6 +1,6 @@
 export type AssignmentSlot = { id: string; workerId: string; name: string };
 export type Assignment = { station: string; names: string[]; slots?: AssignmentSlot[]; status?: "confirmed" | "pending" | "open" };
-export type Service = { id: number | string; weekday: string; date: string; isoDate?: string; time: string; title: string; color: string; assignments: Assignment[] };
+export type Service = { id: number | string; weekday: string; date: string; isoDate?: string; time: string; title: string; color: string; visible?: boolean; assignments: Assignment[] };
 
 export const services: Service[] = [
   { id: 1, weekday: "DOM", date: "09 AGO", time: "18:00", title: "Santa Ceia", color: "purple", assignments: [

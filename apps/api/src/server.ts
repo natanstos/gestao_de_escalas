@@ -192,13 +192,28 @@ app.patch("/api/assignments/:id", async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.put("/api/schedules/:id/visible-events", async (req, res, next) => {
+  try {
+    const currentChurch = await church();
+    const schedule = await prisma.schedule.findFirstOrThrow({ where: { id: req.params.id, churchId: currentChurch.id } });
+    const input = z.object({ eventIds: z.array(z.string().min(1)) }).parse(req.body);
+    const validEvents = await prisma.event.findMany({ where: { id: { in: input.eventIds }, churchId: currentChurch.id, startsAt: { gte: schedule.periodStart, lte: schedule.periodEnd } }, select: { id: true } });
+    if (validEvents.length !== new Set(input.eventIds).size) return res.status(400).json({ message: "Um ou mais cultos não pertencem a esta escala." });
+    await prisma.$transaction([
+      prisma.event.updateMany({ where: { churchId: currentChurch.id, startsAt: { gte: schedule.periodStart, lte: schedule.periodEnd } }, data: { visibleInSchedule: false } }),
+      prisma.event.updateMany({ where: { id: { in: validEvents.map(event => event.id) } }, data: { visibleInSchedule: true } })
+    ]);
+    res.json(await prisma.event.findMany({ where: { churchId: currentChurch.id, startsAt: { gte: schedule.periodStart, lte: schedule.periodEnd }, canceled: false }, include: { eventType: true, requirements: { include: { station: true }, orderBy: { station: { sortOrder: "asc" } } } }, orderBy: { startsAt: "asc" } }));
+  } catch (error) { next(error); }
+});
+
 app.post("/api/schedules/:id/regenerate", async (req, res, next) => {
   try {
     const currentChurch = await church();
     const schedule = await prisma.schedule.findFirstOrThrow({ where: { id: req.params.id, churchId: currentChurch.id }, include: scheduleInclude });
     const workers = await prisma.worker.findMany({ where: { churchId: currentChurch.id, active: true }, include: { role: true, availability: true } });
     const events = await prisma.event.findMany({
-      where: { churchId: currentChurch.id, startsAt: { gte: schedule.periodStart, lte: schedule.periodEnd }, canceled: false },
+      where: { churchId: currentChurch.id, startsAt: { gte: schedule.periodStart, lte: schedule.periodEnd }, canceled: false, visibleInSchedule: true },
       include: { eventType: true, requirements: { include: { station: true }, orderBy: { station: { sortOrder: "asc" } } } },
       orderBy: { startsAt: "asc" }
     });
@@ -228,7 +243,8 @@ app.post("/api/schedules/:id/regenerate", async (req, res, next) => {
       await tx.assignment.createMany({ data: nextAssignments });
     });
     const regeneratedSchedule = await prisma.schedule.findUniqueOrThrow({ where: { id: schedule.id }, include: scheduleInclude });
-    res.json({ schedule: regeneratedSchedule, events });
+    const allEvents = await prisma.event.findMany({ where: { churchId: currentChurch.id, startsAt: { gte: schedule.periodStart, lte: schedule.periodEnd }, canceled: false }, include: { eventType: true, requirements: { include: { station: true }, orderBy: { station: { sortOrder: "asc" } } } }, orderBy: { startsAt: "asc" } });
+    res.json({ schedule: regeneratedSchedule, events: allEvents });
   } catch (error) { next(error); }
 });
 
@@ -275,7 +291,7 @@ app.post("/api/schedules/:id/publish", async (req, res, next) => {
   try {
     const currentChurch = await church();
     const schedule = await prisma.schedule.findFirstOrThrow({ where: { id: req.params.id, churchId: currentChurch.id } });
-    const openRequirements = await prisma.eventRequirement.count({ where: { event: { assignments: { none: { scheduleId: schedule.id } } }, required: true } });
+    const openRequirements = await prisma.eventRequirement.count({ where: { event: { visibleInSchedule: true, assignments: { none: { scheduleId: schedule.id } } }, required: true } });
     if (openRequirements > 0) return res.status(409).json({ message: "Existem postos obrigatórios sem preenchimento.", openRequirements });
     res.json(await prisma.schedule.update({ where: { id: schedule.id }, data: { status: ScheduleStatus.PUBLISHED, publishedAt: new Date(), version: { increment: 1 } } }));
   } catch (error) { next(error); }
@@ -283,7 +299,7 @@ app.post("/api/schedules/:id/publish", async (req, res, next) => {
 
 app.get("/api/public/:token", async (req, res, next) => {
   try {
-    res.json(await prisma.schedule.findFirstOrThrow({ where: { publicToken: req.params.token, status: ScheduleStatus.PUBLISHED }, include: { church: true, assignments: { include: { event: { include: { eventType: true } }, station: true, worker: { include: { role: true } } } } } }));
+    res.json(await prisma.schedule.findFirstOrThrow({ where: { publicToken: req.params.token, status: ScheduleStatus.PUBLISHED }, include: { church: true, assignments: { where: { event: { visibleInSchedule: true } }, include: { event: { include: { eventType: true } }, station: true, worker: { include: { role: true } } } } } }));
   } catch (error) { next(error); }
 });
 

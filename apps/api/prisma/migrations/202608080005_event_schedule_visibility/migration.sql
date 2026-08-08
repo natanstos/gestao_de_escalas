@@ -1,0 +1,2 @@
+ALTER TABLE "Event"
+ADD COLUMN "visibleInSchedule" BOOLEAN NOT NULL DEFAULT true;
