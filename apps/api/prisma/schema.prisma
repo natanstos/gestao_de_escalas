@@ -77,6 +77,10 @@ model Worker {
   phone          String?
   email          String?
   active         Boolean @default(true)
+  availabilityMode String @default("ALL")
+  availableWeekdays Int[] @default([])
+  availableDates DateTime[] @default([])
+  temporarilyUnavailable Boolean @default(false)
   monthlyMaximum Int?
   minimumGapDays Int? @default(2)
   notes          String?

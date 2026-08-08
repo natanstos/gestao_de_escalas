@@ -9,30 +9,23 @@ const nav = [
   { id: "schedule" as View, label: "Escalas", icon: CalendarDays },
   { id: "rules" as View, label: "Regras", icon: ShieldCheck }
 ];
-type WorkerItem = { id: number | string; name: string; role: string; phone: string; active: boolean; assignments: number };
+type AvailabilityMode = "ALL" | "WEEKDAYS" | "DATES";
+type WorkerItem = { id: number | string; name: string; role: string; phone: string; active: boolean; assignments: number; availabilityMode: AvailabilityMode; availableWeekdays: number[]; availableDates: string[]; temporarilyUnavailable: boolean };
 const initialWorkers: WorkerItem[] = [
-  { id: 1, name: "Alexandre (Gelo)", role: "Auxiliar", phone: "(61) 99911-2040", active: true, assignments: 3 },
-  { id: 2, name: "Alexandro Correia", role: "Auxiliar", phone: "(61) 99924-8512", active: true, assignments: 2 },
-  { id: 3, name: "Amaro", role: "Auxiliar", phone: "(61) 99842-3301", active: true, assignments: 3 },
-  { id: 4, name: "Davi Oiticica", role: "Diácono", phone: "(61) 99907-1844", active: true, assignments: 2 },
-  { id: 5, name: "Fernando", role: "Auxiliar", phone: "(61) 99873-6205", active: true, assignments: 4 },
-  { id: 6, name: "Danilo Oiticica", role: "Auxiliar", phone: "(61) 99952-7108", active: true, assignments: 2 },
-  { id: 7, name: "Raniery", role: "Diácono", phone: "(61) 99818-4520", active: true, assignments: 3 },
-  { id: 8, name: "Naldo", role: "Auxiliar", phone: "(61) 99963-1174", active: false, assignments: 1 }
+  { id: 1, name: "Alexandre (Gelo)", role: "Auxiliar", phone: "(61) 99911-2040", active: true, assignments: 3, availabilityMode: "ALL", availableWeekdays: [], availableDates: [], temporarilyUnavailable: false }
 ];
 const titles: Record<View, string> = { dashboard: "Olá, Natanael", schedule: "Escala mensal", rules: "Regras de distribuição", workers: "Obreiros", substitutions: "Substituições", settings: "Configurações" };
 
-type ApiAssignment = { eventId: string; event: { id: string; title: string; startsAt: string; eventType: { code: string; color: string } }; station: { name: string; sortOrder: number }; worker: { displayName: string }; status: string };
-type ApiWorker = { id: string; displayName: string; phone?: string | null; active: boolean; role: { name: string }; _count: { assignments: number } };
-const mapWorker = (worker: ApiWorker): WorkerItem => ({ id: worker.id, name: worker.displayName, role: worker.role.name, phone: worker.phone ?? "", active: worker.active, assignments: worker._count.assignments });
-const mapSchedule = (assignments: ApiAssignment[]): Service[] => {
-  const grouped = new Map<string, ApiAssignment[]>();
-  assignments.forEach(item => grouped.set(item.eventId, [...(grouped.get(item.eventId) ?? []), item]));
-  return [...grouped.values()].map(items => {
-    const event = items[0].event;
+type ApiAssignment = { id: string; eventId: string; stationId: string; event: { id: string; title: string; startsAt: string; eventType: { code: string; color: string } }; station: { id: string; name: string; sortOrder: number }; workerId: string; worker: { displayName: string }; status: string };
+type ApiEvent = { id: string; title: string; startsAt: string; eventType: { code: string; color: string }; requirements: Array<{ quantity: number; station: { id: string; name: string; sortOrder: number } }> };
+type ApiWorker = { id: string; displayName: string; phone?: string | null; active: boolean; availabilityMode: AvailabilityMode; availableWeekdays: number[]; availableDates: string[]; temporarilyUnavailable: boolean; role: { name: string }; _count: { assignments: number } };
+const mapWorker = (worker: ApiWorker): WorkerItem => ({ id: worker.id, name: worker.displayName, role: worker.role.name, phone: worker.phone ?? "", active: worker.active, assignments: worker._count.assignments, availabilityMode: worker.availabilityMode, availableWeekdays: worker.availableWeekdays, availableDates: worker.availableDates.map(date => date.slice(0, 10)), temporarilyUnavailable: worker.temporarilyUnavailable });
+const mapSchedule = (events: ApiEvent[], assignments: ApiAssignment[]): Service[] => {
+  const assignmentsByEvent = new Map<string, ApiAssignment[]>();
+  assignments.forEach(item => assignmentsByEvent.set(item.eventId, [...(assignmentsByEvent.get(item.eventId) ?? []), item]));
+  return events.map(event => {
+    const items = assignmentsByEvent.get(event.id) ?? [];
     const startsAt = new Date(event.startsAt);
-    const stationGroups = new Map<string, ApiAssignment[]>();
-    items.forEach(item => stationGroups.set(item.station.name, [...(stationGroups.get(item.station.name) ?? []), item]));
     return {
       id: event.id,
       title: event.title,
@@ -41,7 +34,10 @@ const mapSchedule = (assignments: ApiAssignment[]): Service[] => {
       date: new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "short", timeZone: "America/Sao_Paulo" }).format(startsAt).replace(" de ", " ").replace(".", "").toUpperCase(),
       time: new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "America/Sao_Paulo" }).format(startsAt),
       color: event.eventType.code === "SANTA_CEIA" ? "purple" : event.eventType.code === "TERCA" ? "teal" : "gold",
-      assignments: [...stationGroups.values()].sort((a, b) => a[0].station.sortOrder - b[0].station.sortOrder).map(group => ({ station: group[0].station.name, names: group.map(item => item.worker.displayName), status: (group.some(item => item.status === "PENDING") ? "pending" : "confirmed") as "pending" | "confirmed" }))
+      assignments: event.requirements.map(requirement => {
+        const group = items.filter(item => item.stationId === requirement.station.id);
+        return { station: requirement.station.name, names: group.map(item => item.worker.displayName), slots: group.map(item => ({ id: item.id, workerId: item.workerId, name: item.worker.displayName })), status: (group.length < requirement.quantity ? "open" : group.some(item => item.status === "PENDING") ? "pending" : "confirmed") as "open" | "pending" | "confirmed" };
+      })
     };
   }).sort((a, b) => new Date(a.isoDate!).getTime() - new Date(b.isoDate!).getTime());
 };
@@ -65,7 +61,7 @@ export default function App() {
       const apiWorkers = await workersResponse.json();
       setChurchSettings({ name: dashboard.church.name, timezone: dashboard.church.timezone });
       setScheduleId(dashboard.schedule?.id ?? null);
-      if (dashboard.schedule?.assignments?.length) setScheduleServices(mapSchedule(dashboard.schedule.assignments));
+      if (dashboard.schedule) setScheduleServices(mapSchedule(dashboard.events ?? [], dashboard.schedule.assignments ?? []));
       setWorkers(apiWorkers.map(mapWorker));
     }).catch(() => announce("Não foi possível sincronizar com o servidor; exibindo dados locais."));
   }, []);
@@ -99,7 +95,7 @@ export default function App() {
     <main>
       <header className="topbar"><button className="menu-button" onClick={() => setMobileMenu(true)} aria-label="Abrir menu"><Menu/></button><div><span className="eyebrow">IGREJA DE BRASÍLIA</span><h1>{titles[view]}</h1></div><button className="primary desktop-action" onClick={() => setShareOpen(true)}><Share2 size={18}/> Compartilhar</button></header>
       {view === "dashboard" && <Dashboard services={scheduleServices} onNavigate={navigate} onShare={() => setShareOpen(true)}/>}
-      {view === "schedule" && <SchedulePage scheduleId={scheduleId} services={scheduleServices} setServices={setScheduleServices} onShare={() => setShareOpen(true)} announce={announce}/>}
+      {view === "schedule" && <SchedulePage scheduleId={scheduleId} services={scheduleServices} setServices={setScheduleServices} workers={workers} onShare={() => setShareOpen(true)} announce={announce}/>}
       {view === "rules" && <RulesPage rules={rules} setRules={setRules} announce={announce}/>}
       {view === "workers" && <WorkersPage workers={workers} setWorkers={setWorkers} announce={announce}/>}
       {view === "substitutions" && <SubstitutionsPage announce={announce}/>}
@@ -126,18 +122,34 @@ function ServiceRow({ service }: { service: Service }) {
   return <article className="event-row"><div className={`date-card ${service.color}`}><strong>{service.date.split(" ")[0]}</strong><span>{service.date.split(" ")[1]}</span></div><div className="event-copy"><strong>{service.title}</strong><span>{service.weekday === "DOM" ? "Domingo" : service.weekday === "TER" ? "Terça-feira" : "Sexta-feira"} · {service.time}</span></div><div className="mini-avatars">{service.assignments.flatMap(a => a.names).slice(0, 4).map((name, i) => <span key={name}>{name.split(" ").map(p=>p[0]).slice(0,2).join("")}</span>)}<small>+{Math.max(0, filled - 4)}</small></div><span className={service.assignments.some(a => a.status === "open") ? "status warning" : "status success"}>{service.assignments.some(a => a.status === "open") ? "1 vaga" : "Completo"}</span><ChevronRight className="row-arrow"/></article>;
 }
 
-function SchedulePage({ scheduleId, services, setServices, onShare, announce }: { scheduleId: string | null; services: Service[]; setServices: React.Dispatch<React.SetStateAction<Service[]>>; onShare: () => void; announce: (m: string) => void }) {
+function SchedulePage({ scheduleId, services, setServices, workers, onShare, announce }: { scheduleId: string | null; services: Service[]; setServices: React.Dispatch<React.SetStateAction<Service[]>>; workers: WorkerItem[]; onShare: () => void; announce: (m: string) => void }) {
   const [editing, setEditing] = useState<Service | null>(null);
+  const [editingAssignment, setEditingAssignment] = useState<{ serviceId: string | number; assignmentId: string; workerId: string; station: string; currentName: string } | null>(null);
   const [confirmGenerate, setConfirmGenerate] = useState(false);
   const regenerate = async () => {
     if (!scheduleId) return announce("A escala ainda não foi carregada do servidor.");
     try {
       const response = await fetch(`/api/schedules/${scheduleId}/regenerate`, { method: "POST" });
       if (!response.ok) throw new Error();
-      const schedule = await response.json();
-      setServices(mapSchedule(schedule.assignments));
+      const result = await response.json();
+      setServices(mapSchedule(result.events, result.schedule.assignments));
       setConfirmGenerate(false); announce("Nova sugestão salva no banco. Revise antes de publicar.");
     } catch { announce("Não foi possível gerar a escala. Tente novamente."); }
+  };
+  const saveAssignment = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); if (!editingAssignment) return;
+    const workerId = String(new FormData(event.currentTarget).get("workerId"));
+    try {
+      const response = await fetch(`/api/assignments/${editingAssignment.assignmentId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workerId }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.message);
+      setServices(current => current.map(service => service.id !== editingAssignment.serviceId ? service : { ...service, assignments: service.assignments.map(assignment => {
+        if (!assignment.slots?.some(slot => slot.id === editingAssignment.assignmentId)) return assignment;
+        const slots = assignment.slots.map(slot => slot.id === editingAssignment.assignmentId ? { ...slot, workerId: body.workerId, name: body.worker.displayName } : slot);
+        return { ...assignment, slots, names: slots.map(slot => slot.name), status: "pending" };
+      }) }));
+      setEditingAssignment(null); announce("Alocação manual salva.");
+    } catch (error) { announce(error instanceof Error && error.message ? error.message : "Não foi possível alterar a alocação."); }
   };
   const saveService = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); if (!editing) return;
@@ -152,9 +164,10 @@ function SchedulePage({ scheduleId, services, setServices, onShare, announce }: 
       setEditing(null); announce("Culto salvo no PostgreSQL.");
     } catch { announce("Não foi possível salvar o culto."); }
   };
-  return <div className="page"><div className="page-toolbar"><div className="month-switch"><button onClick={() => announce("Julho de 2026 não possui escala neste MVP.")}>‹</button><strong>Agosto de 2026</strong><button onClick={() => announce("Setembro de 2026 ainda não foi criado.")}>›</button></div><div><button className="ghost" onClick={() => setConfirmGenerate(true)}><Sparkles size={18}/> Gerar novamente</button><button className="primary" onClick={onShare}><MessageCircle size={18}/> Compartilhar</button></div></div><div className="schedule-grid">{services.map(service => <article className="service-card" key={service.id}><div className="service-head"><div className={`large-date ${service.color}`}><strong>{service.date.split(" ")[0]}</strong><span>{service.date.split(" ")[1]}</span></div><div><span className="eyebrow">{service.weekday} · {service.time}</span><h3>{service.title}</h3></div><button className="icon-button edit-service" aria-label={`Editar ${service.title}`} onClick={() => setEditing(service)}>•••</button></div><div className="assignment-list">{service.assignments.map(a => <button key={a.station} className={a.status === "open" ? "assignment open-slot" : "assignment"} onClick={() => a.status === "open" ? announce("Seleção de obreiro aberta.") : announce(`${a.station}: ${a.names.join(", ")}`)}><span>{a.station}</span><strong>{a.names.length ? a.names.join(" · ") : "+ Preencher vaga"}</strong>{a.status === "confirmed" ? <Check className="ok"/> : a.status === "pending" ? <span className="pending-dot"/> : <Plus/>}</button>)}</div></article>)}</div>
+  return <div className="page"><div className="page-toolbar"><div className="month-switch"><button onClick={() => announce("Julho de 2026 não possui escala neste MVP.")}>‹</button><strong>Agosto de 2026</strong><button onClick={() => announce("Setembro de 2026 ainda não foi criado.")}>›</button></div><div><button className="ghost" onClick={() => setConfirmGenerate(true)}><Sparkles size={18}/> Gerar novamente</button><button className="primary" onClick={onShare}><MessageCircle size={18}/> Compartilhar</button></div></div><div className="month-summary"><CalendarDays/><strong>{services.length} cultos no mês</strong><span>Todos os cultos de agosto estão visíveis abaixo.</span></div><div className="schedule-grid">{services.map(service => <article className="service-card" key={service.id}><div className="service-head"><div className={`large-date ${service.color}`}><strong>{service.date.split(" ")[0]}</strong><span>{service.date.split(" ")[1]}</span></div><div><span className="eyebrow">{service.weekday} · {service.time}</span><h3>{service.title}</h3></div><button className="icon-button edit-service" aria-label={`Editar ${service.title}`} onClick={() => setEditing(service)}>•••</button></div><div className="assignment-list">{service.assignments.map(a => <div key={a.station} className={a.status === "open" ? "assignment open-slot" : "assignment"}><span>{a.station}</span><div className="assignment-workers">{a.slots?.map(slot => <button key={slot.id} onClick={() => setEditingAssignment({ serviceId: service.id, assignmentId: slot.id, workerId: slot.workerId, station: a.station, currentName: slot.name })}>{slot.name}<span>Editar</span></button>)}{!a.slots?.length && <strong>+ Preencher vaga</strong>}</div>{a.status === "confirmed" ? <Check className="ok"/> : a.status === "pending" ? <span className="pending-dot"/> : <Plus/>}</div>)}</div></article>)}</div>
     {confirmGenerate && <div className="modal-backdrop"><section className="confirm-modal"><div className="stat-icon purple"><Sparkles/></div><h2>Gerar uma nova distribuição?</h2><p>Os nomes atuais serão reorganizados e todas as confirmações voltarão para pendentes. A alteração permanece em revisão.</p><div className="modal-actions"><button className="ghost" onClick={() => setConfirmGenerate(false)}>Cancelar</button><button className="primary" onClick={regenerate}>Gerar nova sugestão</button></div></section></div>}
     {editing && <div className="modal-backdrop"><form className="form-modal" onSubmit={saveService}><div className="modal-head"><div><span className="eyebrow">EDITAR CULTO</span><h2>{editing.title}</h2></div><button type="button" className="icon-button" onClick={() => setEditing(null)}><X/></button></div><label>Nome do culto<input name="title" defaultValue={editing.title} required/></label><div className="form-grid"><label>Data<input name="date" type="date" defaultValue={(editing.isoDate ?? "2026-08-09").slice(0,10)} required/></label><label>Horário<input name="time" type="time" defaultValue={editing.time} required/></label></div><div className="modal-actions"><button type="button" className="ghost" onClick={() => setEditing(null)}>Cancelar</button><button type="submit" className="primary"><Save size={17}/> Salvar culto</button></div></form></div>}
+    {editingAssignment && <div className="modal-backdrop"><form className="form-modal" onSubmit={saveAssignment}><div className="modal-head"><div><span className="eyebrow">ALOCAÇÃO MANUAL</span><h2>{editingAssignment.station}</h2></div><button type="button" className="icon-button" onClick={() => setEditingAssignment(null)}><X/></button></div><p className="form-help">Substitua {editingAssignment.currentName} por outro obreiro. As regras e a disponibilidade serão validadas.</p><label>Obreiro<select name="workerId" defaultValue={editingAssignment.workerId}>{workers.filter(worker => worker.active && !worker.temporarilyUnavailable).map(worker => <option key={worker.id} value={worker.id}>{worker.name} · {worker.role}</option>)}</select></label><div className="modal-actions"><button type="button" className="ghost" onClick={() => setEditingAssignment(null)}>Cancelar</button><button type="submit" className="primary"><Save size={17}/> Salvar alocação</button></div></form></div>}
   </div>;
 }
 
@@ -166,6 +179,9 @@ function WorkersPage({ workers, setWorkers, announce }: { workers: WorkerItem[];
   const [query, setQuery] = useState("");
   const [formOpen, setFormOpen] = useState(false);
   const [selected, setSelected] = useState<WorkerItem | null>(null);
+  const [availabilityMode, setAvailabilityMode] = useState<AvailabilityMode>("ALL");
+  const [availableDates, setAvailableDates] = useState<string[]>([]);
+  const [newDate, setNewDate] = useState("");
   const filtered = workers.filter(worker => `${worker.name} ${worker.role}`.toLowerCase().includes(query.toLowerCase()));
   const saveWorker = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -173,16 +189,17 @@ function WorkersPage({ workers, setWorkers, announce }: { workers: WorkerItem[];
     const name = String(form.get("name") || "").trim();
     if (!name) return;
     try {
-      const response = await fetch(selected ? `/api/workers/${selected.id}` : "/api/workers", { method: selected ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ displayName: name, roleName: String(form.get("role")), phone: String(form.get("phone")), active: selected?.active ?? true }) });
+      const response = await fetch(selected ? `/api/workers/${selected.id}` : "/api/workers", { method: selected ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ displayName: name, roleName: String(form.get("role")), phone: String(form.get("phone")), active: selected?.active ?? true, availabilityMode, availableWeekdays: form.getAll("weekdays").map(Number), availableDates: availableDates.map(date => `${date}T12:00:00.000Z`), temporarilyUnavailable: form.get("temporarilyUnavailable") === "on" }) });
       if (!response.ok) throw new Error();
       const worker = mapWorker(await response.json());
       setWorkers(current => selected ? current.map(item => item.id === selected.id ? worker : item) : [...current, worker].sort((a,b) => a.name.localeCompare(b.name)));
       setFormOpen(false); setSelected(null); announce(selected ? "Cadastro salvo no PostgreSQL." : "Obreiro salvo no PostgreSQL.");
     } catch { announce("Não foi possível salvar o obreiro."); }
   };
-  const openEditor = (worker?: WorkerItem) => { setSelected(worker ?? null); setFormOpen(true); };
-  return <div className="page"><div className="section-toolbar"><div className="search-box"><Search/><input aria-label="Pesquisar obreiros" placeholder="Pesquisar por nome ou função" value={query} onChange={event => setQuery(event.target.value)}/></div><button className="primary" onClick={() => openEditor()}><UserPlus size={18}/> Novo obreiro</button></div><div className="summary-strip"><span><strong>{workers.filter(w => w.active).length}</strong> ativos</span><span><strong>{workers.filter(w => !w.active).length}</strong> inativos</span><span><strong>{workers.reduce((total,w) => total + w.assignments, 0)}</strong> designações no mês</span></div><section className="table-card"><div className="table-head"><span>Obreiro</span><span>Função</span><span>Telefone</span><span>Escalas</span><span>Status</span></div>{filtered.map(worker => <button className="worker-row" key={worker.id} onClick={() => openEditor(worker)}><div className="worker-name"><div className="avatar small">{worker.name.split(" ").map(part=>part[0]).slice(0,2).join("")}</div><strong>{worker.name}</strong></div><span>{worker.role}</span><span>{worker.phone}</span><strong>{worker.assignments}</strong><span className={worker.active ? "status success" : "status muted"}>{worker.active ? "Ativo" : "Inativo"}</span></button>)}{filtered.length === 0 && <div className="empty-state">Nenhum obreiro encontrado.</div>}</section>
-    {formOpen && <div className="modal-backdrop"><form className="form-modal" onSubmit={saveWorker}><div className="modal-head"><div><span className="eyebrow">CADASTRO</span><h2>{selected ? "Editar obreiro" : "Novo obreiro"}</h2></div><button type="button" className="icon-button" onClick={() => setFormOpen(false)}><X/></button></div><label>Nome de exibição<input name="name" defaultValue={selected?.name} placeholder="Nome usado na escala" autoFocus/></label><div className="form-grid"><label>Função<select name="role" defaultValue={selected?.role ?? "Auxiliar"}><option>Auxiliar</option><option>Diácono</option><option>Presbítero</option></select></label><label>Telefone<input name="phone" defaultValue={selected?.phone} placeholder="(61) 99999-9999"/></label></div><div className="modal-actions">{selected && <button type="button" className="ghost" onClick={async () => { try { const response = await fetch(`/api/workers/${selected.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active: !selected.active }) }); if (!response.ok) throw new Error(); const worker = mapWorker(await response.json()); setWorkers(current => current.map(item => item.id === selected.id ? worker : item)); setFormOpen(false); announce(selected.active ? "Obreiro inativado no banco." : "Obreiro reativado no banco."); } catch { announce("Não foi possível alterar o status."); } }}>{selected.active ? "Inativar" : "Reativar"}</button>}<button className="primary" type="submit"><Save size={17}/> Salvar</button></div></form></div>}
+  const openEditor = (worker?: WorkerItem) => { setSelected(worker ?? null); setAvailabilityMode(worker?.availabilityMode ?? "ALL"); setAvailableDates(worker?.availableDates ?? []); setNewDate(""); setFormOpen(true); };
+  const weekdayOptions = [[0,"Dom"],[1,"Seg"],[2,"Ter"],[3,"Qua"],[4,"Qui"],[5,"Sex"],[6,"Sáb"]] as const;
+  return <div className="page"><div className="section-toolbar"><div className="search-box"><Search/><input aria-label="Pesquisar obreiros" placeholder="Pesquisar por nome ou função" value={query} onChange={event => setQuery(event.target.value)}/></div><button className="primary" onClick={() => openEditor()}><UserPlus size={18}/> Novo obreiro</button></div><div className="summary-strip"><span><strong>{workers.filter(w => w.active && !w.temporarilyUnavailable).length}</strong> disponíveis</span><span><strong>{workers.filter(w => w.temporarilyUnavailable).length}</strong> indisponíveis temporariamente</span><span><strong>{workers.reduce((total,w) => total + w.assignments, 0)}</strong> designações no mês</span></div><section className="table-card"><div className="table-head"><span>Obreiro</span><span>Função</span><span>Telefone</span><span>Escalas</span><span>Status</span></div>{filtered.map(worker => <button className="worker-row" key={worker.id} onClick={() => openEditor(worker)}><div className="worker-name"><div className="avatar small">{worker.name.split(" ").map(part=>part[0]).slice(0,2).join("")}</div><strong>{worker.name}</strong></div><span>{worker.role}</span><span>{worker.phone}</span><strong>{worker.assignments}</strong><span className={worker.temporarilyUnavailable ? "status warning" : worker.active ? "status success" : "status muted"}>{worker.temporarilyUnavailable ? "Indisponível" : worker.active ? "Ativo" : "Inativo"}</span></button>)}{filtered.length === 0 && <div className="empty-state">Nenhum obreiro encontrado.</div>}</section>
+    {formOpen && <div className="modal-backdrop"><form className="form-modal worker-form" onSubmit={saveWorker}><div className="modal-head"><div><span className="eyebrow">CADASTRO</span><h2>{selected ? "Editar obreiro" : "Novo obreiro"}</h2></div><button type="button" className="icon-button" onClick={() => setFormOpen(false)}><X/></button></div><label>Nome de exibição<input name="name" defaultValue={selected?.name} placeholder="Nome usado na escala" autoFocus/></label><div className="form-grid"><label>Função<select name="role" defaultValue={selected?.role ?? "Auxiliar"}><option>Auxiliar</option><option>Diácono</option><option>Presbítero</option></select></label><label>Telefone<input name="phone" defaultValue={selected?.phone} placeholder="(61) 99999-9999"/></label></div><div className="availability-box"><div><span className="eyebrow">DISPONIBILIDADE</span><h3>Quando pode entrar na escala?</h3></div><label>Forma de disponibilidade<select value={availabilityMode} onChange={event => setAvailabilityMode(event.target.value as AvailabilityMode)}><option value="ALL">Todos os dias</option><option value="WEEKDAYS">Somente em dias da semana escolhidos</option><option value="DATES">Somente em datas específicas</option></select></label>{availabilityMode === "WEEKDAYS" && <div className="weekday-picker">{weekdayOptions.map(([value,label]) => <label key={value}><input type="checkbox" name="weekdays" value={value} defaultChecked={selected?.availableWeekdays.includes(value)}/><span>{label}</span></label>)}</div>}{availabilityMode === "DATES" && <div><div className="date-adder"><input type="date" value={newDate} onChange={event => setNewDate(event.target.value)}/><button type="button" className="secondary" onClick={() => { if (newDate && !availableDates.includes(newDate)) setAvailableDates(current => [...current, newDate].sort()); setNewDate(""); }}><Plus size={16}/> Adicionar</button></div><div className="date-chips">{availableDates.map(date => <button type="button" key={date} onClick={() => setAvailableDates(current => current.filter(item => item !== date))}>{new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" }).format(new Date(`${date}T12:00:00Z`))}<X size={13}/></button>)}</div></div>}<label className="temporary-toggle"><input type="checkbox" name="temporarilyUnavailable" defaultChecked={selected?.temporarilyUnavailable}/><span><strong>Temporariamente indisponível</strong><small>Não será incluído em nenhuma geração até esta opção ser desmarcada.</small></span></label></div><div className="modal-actions">{selected && <button type="button" className="ghost" onClick={async () => { try { const response = await fetch(`/api/workers/${selected.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active: !selected.active }) }); if (!response.ok) throw new Error(); const worker = mapWorker(await response.json()); setWorkers(current => current.map(item => item.id === selected.id ? worker : item)); setFormOpen(false); announce(selected.active ? "Obreiro inativado no banco." : "Obreiro reativado no banco."); } catch { announce("Não foi possível alterar o status."); } }}>{selected.active ? "Inativar" : "Reativar"}</button>}<button className="primary" type="submit"><Save size={17}/> Salvar</button></div></form></div>}
   </div>;
 }
 

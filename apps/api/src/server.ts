@@ -12,6 +12,16 @@ app.use(express.json({ limit: "1mb" }));
 
 const church = () => prisma.church.findFirstOrThrow({ where: { active: true } });
 const scheduleInclude = { assignments: { include: { event: { include: { eventType: true } }, station: true, worker: { include: { role: true } } }, orderBy: [{ event: { startsAt: "asc" as const } }, { station: { sortOrder: "asc" as const } }] } };
+const dateKey = (date: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+const weekdayAtChurch = (date: Date) => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", weekday: "short" }).format(date));
+const isWorkerAvailable = (worker: { active: boolean; temporarilyUnavailable: boolean; availabilityMode: string; availableWeekdays: number[]; availableDates: Date[]; availability: Array<{ kind: string; startsAt: Date; endsAt: Date }> }, startsAt: Date) => {
+  if (!worker.active || worker.temporarilyUnavailable) return false;
+  const matchesMode = worker.availabilityMode === "ALL"
+    || (worker.availabilityMode === "WEEKDAYS" && worker.availableWeekdays.includes(weekdayAtChurch(startsAt)))
+    || (worker.availabilityMode === "DATES" && worker.availableDates.some(date => dateKey(date) === dateKey(startsAt)));
+  const unavailable = worker.availability.some(item => item.kind === "indisponivel" && item.startsAt <= startsAt && item.endsAt >= startsAt);
+  return matchesMode && !unavailable;
+};
 
 app.get("/api/health", (_req, res) => res.json({ status: "ok", service: "gestao-de-escalas" }));
 
@@ -23,7 +33,11 @@ app.get("/api/dashboard", async (_req, res, next) => {
       prisma.distributionRule.count({ where: { churchId: currentChurch.id, active: true } }),
       prisma.schedule.findFirst({ where: { churchId: currentChurch.id }, orderBy: { periodStart: "desc" }, include: scheduleInclude })
     ]);
-    const events = schedule ? [...new Map(schedule.assignments.map((a) => [a.eventId, a.event])).values()] : [];
+    const events = schedule ? await prisma.event.findMany({
+      where: { churchId: currentChurch.id, startsAt: { gte: schedule.periodStart, lte: schedule.periodEnd }, canceled: false },
+      include: { eventType: true, requirements: { include: { station: true }, orderBy: { station: { sortOrder: "asc" } } } },
+      orderBy: { startsAt: "asc" }
+    }) : [];
     res.json({ church: currentChurch, workers, rules, schedule, events });
   } catch (error) { next(error); }
 });
@@ -44,14 +58,23 @@ app.get("/api/workers", async (_req, res, next) => {
   } catch (error) { next(error); }
 });
 
-const workerInput = z.object({ displayName: z.string().min(2).max(100), roleName: z.string().min(2).max(50), phone: z.string().max(30).optional().default(""), active: z.boolean().optional().default(true) });
+const workerInput = z.object({
+  displayName: z.string().min(2).max(100),
+  roleName: z.string().min(2).max(50),
+  phone: z.string().max(30).optional().default(""),
+  active: z.boolean().optional().default(true),
+  availabilityMode: z.enum(["ALL", "WEEKDAYS", "DATES"]).optional().default("ALL"),
+  availableWeekdays: z.array(z.number().int().min(0).max(6)).optional().default([]),
+  availableDates: z.array(z.coerce.date()).optional().default([]),
+  temporarilyUnavailable: z.boolean().optional().default(false)
+});
 
 app.post("/api/workers", async (req, res, next) => {
   try {
     const currentChurch = await church();
     const input = workerInput.parse(req.body);
     const role = await prisma.ministryRole.findFirstOrThrow({ where: { churchId: currentChurch.id, name: input.roleName } });
-    const worker = await prisma.worker.create({ data: { churchId: currentChurch.id, roleId: role.id, fullName: input.displayName, displayName: input.displayName, phone: input.phone, active: input.active }, include: { role: true, _count: { select: { assignments: true } } } });
+    const worker = await prisma.worker.create({ data: { churchId: currentChurch.id, roleId: role.id, fullName: input.displayName, displayName: input.displayName, phone: input.phone, active: input.active, availabilityMode: input.availabilityMode, availableWeekdays: input.availableWeekdays, availableDates: input.availableDates, temporarilyUnavailable: input.temporarilyUnavailable }, include: { role: true, _count: { select: { assignments: true } } } });
     const stations = await prisma.station.findMany({ where: { churchId: currentChurch.id, active: true } });
     await prisma.workerStation.createMany({ data: stations.map(station => ({ workerId: worker.id, stationId: station.id })) });
     res.status(201).json(worker);
@@ -64,7 +87,7 @@ app.patch("/api/workers/:id", async (req, res, next) => {
     const existing = await prisma.worker.findFirstOrThrow({ where: { id: req.params.id, churchId: currentChurch.id } });
     const input = workerInput.partial().parse(req.body);
     const role = input.roleName ? await prisma.ministryRole.findFirstOrThrow({ where: { churchId: currentChurch.id, name: input.roleName } }) : null;
-    res.json(await prisma.worker.update({ where: { id: existing.id }, data: { displayName: input.displayName, fullName: input.displayName, phone: input.phone, active: input.active, roleId: role?.id }, include: { role: true, _count: { select: { assignments: true } } } }));
+    res.json(await prisma.worker.update({ where: { id: existing.id }, data: { displayName: input.displayName, fullName: input.displayName, phone: input.phone, active: input.active, roleId: role?.id, availabilityMode: input.availabilityMode, availableWeekdays: input.availableWeekdays, availableDates: input.availableDates, temporarilyUnavailable: input.temporarilyUnavailable }, include: { role: true, _count: { select: { assignments: true } } } }));
   } catch (error) { next(error); }
 });
 
@@ -77,42 +100,60 @@ app.patch("/api/events/:id", async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.patch("/api/assignments/:id", async (req, res, next) => {
+  try {
+    const currentChurch = await church();
+    const input = z.object({ workerId: z.string().min(1) }).parse(req.body);
+    const assignment = await prisma.assignment.findFirstOrThrow({
+      where: { id: req.params.id, schedule: { churchId: currentChurch.id } },
+      include: { event: { include: { eventType: true } }, station: true }
+    });
+    const worker = await prisma.worker.findFirstOrThrow({ where: { id: input.workerId, churchId: currentChurch.id }, include: { role: true, availability: true } });
+    if (!isWorkerAvailable(worker, assignment.event.startsAt)) return res.status(409).json({ message: "O obreiro não está disponível nessa data." });
+    if (assignment.event.eventType.code === "SANTA_CEIA" && worker.role.name !== "Auxiliar") return res.status(409).json({ message: "Na Santa Ceia, somente auxiliares podem ser escalados." });
+    const alreadyAssigned = await prisma.assignment.findFirst({ where: { scheduleId: assignment.scheduleId, eventId: assignment.eventId, workerId: worker.id, id: { not: assignment.id } } });
+    if (alreadyAssigned) return res.status(409).json({ message: "O obreiro já está escalado neste culto." });
+    res.json(await prisma.assignment.update({ where: { id: assignment.id }, data: { workerId: worker.id, origin: "MANUAL", status: "PENDING" }, include: { worker: { include: { role: true } }, station: true, event: { include: { eventType: true } } } }));
+  } catch (error) { next(error); }
+});
+
 app.post("/api/schedules/:id/regenerate", async (req, res, next) => {
   try {
     const currentChurch = await church();
     const schedule = await prisma.schedule.findFirstOrThrow({ where: { id: req.params.id, churchId: currentChurch.id }, include: scheduleInclude });
     const workers = await prisma.worker.findMany({ where: { churchId: currentChurch.id, active: true }, include: { role: true, availability: true } });
+    const events = await prisma.event.findMany({
+      where: { churchId: currentChurch.id, startsAt: { gte: schedule.periodStart, lte: schedule.periodEnd }, canceled: false },
+      include: { eventType: true, requirements: { include: { station: true }, orderBy: { station: { sortOrder: "asc" } } } },
+      orderBy: { startsAt: "asc" }
+    });
     const counts = new Map<string, number>();
     schedule.assignments.forEach(item => counts.set(item.workerId, (counts.get(item.workerId) ?? 0) + 1));
-    const selectedByEvent = new Map<string, Set<string>>();
     const nextAssignments: Array<{ scheduleId: string; eventId: string; stationId: string; workerId: string; origin: string; status: "PENDING"; notes: string | null }> = [];
-    for (const assignment of schedule.assignments) {
-      const selectedWorkers = selectedByEvent.get(assignment.eventId) ?? new Set<string>();
-      selectedByEvent.set(assignment.eventId, selectedWorkers);
-      const eligibleWorkers = workers.filter(worker => {
-        const unavailable = worker.availability.some(item => item.kind === "indisponivel" && item.startsAt <= assignment.event.startsAt && item.endsAt >= assignment.event.startsAt);
-        const allowedRole = assignment.event.eventType.code !== "SANTA_CEIA" || worker.role.name === "Auxiliar";
-        return !unavailable && allowedRole && !selectedWorkers.has(worker.id);
-      }).sort((a, b) => (counts.get(a.id) ?? 0) - (counts.get(b.id) ?? 0) || a.displayName.localeCompare(b.displayName));
-      const selected = eligibleWorkers.find(worker => worker.id !== assignment.workerId) ?? eligibleWorkers[0];
-      if (!selected) throw new Error(`Nenhum obreiro elegível para o posto ${assignment.station.name} em ${assignment.event.title}.`);
-      selectedWorkers.add(selected.id);
-      counts.set(selected.id, (counts.get(selected.id) ?? 0) + 1);
-      nextAssignments.push({
-        scheduleId: schedule.id,
-        eventId: assignment.eventId,
-        stationId: assignment.stationId,
-        workerId: selected.id,
-        origin: "AUTOMATIC",
-        status: "PENDING",
-        notes: assignment.notes
-      });
+    for (const event of events) {
+      const selectedWorkers = new Set<string>();
+      for (const requirement of event.requirements) {
+        const currentSlots = schedule.assignments.filter(item => item.eventId === event.id && item.stationId === requirement.stationId);
+        for (let slot = 0; slot < requirement.quantity; slot += 1) {
+          const currentWorkerId = currentSlots[slot]?.workerId;
+          const eligibleWorkers = workers.filter(worker => {
+            const allowedRole = event.eventType.code !== "SANTA_CEIA" || worker.role.name === "Auxiliar";
+            return allowedRole && isWorkerAvailable(worker, event.startsAt) && !selectedWorkers.has(worker.id);
+          }).sort((a, b) => (counts.get(a.id) ?? 0) - (counts.get(b.id) ?? 0) || a.displayName.localeCompare(b.displayName));
+          const selected = eligibleWorkers.find(worker => worker.id !== currentWorkerId) ?? eligibleWorkers[0];
+          if (!selected) throw new Error(`Nenhum obreiro elegível para o posto ${requirement.station.name} em ${event.title}.`);
+          selectedWorkers.add(selected.id);
+          counts.set(selected.id, (counts.get(selected.id) ?? 0) + 1);
+          nextAssignments.push({ scheduleId: schedule.id, eventId: event.id, stationId: requirement.stationId, workerId: selected.id, origin: "AUTOMATIC", status: "PENDING", notes: null });
+        }
+      }
     }
     await prisma.$transaction(async tx => {
       await tx.assignment.deleteMany({ where: { scheduleId: schedule.id } });
       await tx.assignment.createMany({ data: nextAssignments });
     });
-    res.json(await prisma.schedule.findUniqueOrThrow({ where: { id: schedule.id }, include: scheduleInclude }));
+    const regeneratedSchedule = await prisma.schedule.findUniqueOrThrow({ where: { id: schedule.id }, include: scheduleInclude });
+    res.json({ schedule: regeneratedSchedule, events });
   } catch (error) { next(error); }
 });
 

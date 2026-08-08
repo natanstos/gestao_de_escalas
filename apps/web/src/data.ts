@@ -1,4 +1,5 @@
-export type Assignment = { station: string; names: string[]; status?: "confirmed" | "pending" | "open" };
+export type AssignmentSlot = { id: string; workerId: string; name: string };
+export type Assignment = { station: string; names: string[]; slots?: AssignmentSlot[]; status?: "confirmed" | "pending" | "open" };
 export type Service = { id: number | string; weekday: string; date: string; isoDate?: string; time: string; title: string; color: string; assignments: Assignment[] };
 
 export const services: Service[] = [
