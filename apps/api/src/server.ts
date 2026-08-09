@@ -213,32 +213,29 @@ app.put("/api/schedules/:id/santa-ceia", async (req, res, next) => {
     const schedule = await prisma.schedule.findFirstOrThrow({ where: { id: req.params.id, churchId: currentChurch.id } });
     const input = z.object({ startsAt: z.coerce.date() }).parse(req.body);
     if (input.startsAt < schedule.periodStart || input.startsAt > schedule.periodEnd) return res.status(400).json({ message: "A data deve estar dentro do mês da escala." });
-    const [supperType, sundayType] = await Promise.all([
-      prisma.eventType.findFirstOrThrow({ where: { churchId: currentChurch.id, code: "SANTA_CEIA" }, include: { stations: true } }),
-      prisma.eventType.findFirstOrThrow({ where: { churchId: currentChurch.id, code: "DOMINGO" }, include: { stations: true } })
-    ]);
+    const eventTypes = await prisma.eventType.findMany({ where: { churchId: currentChurch.id, active: true }, include: { stations: true } });
+    const supperType = eventTypes.find(eventType => eventType.code === "SANTA_CEIA");
+    if (!supperType) throw new Error("Tipo de culto Santa Ceia não encontrado.");
     const supper = await prisma.event.findFirstOrThrow({ where: { churchId: currentChurch.id, eventTypeId: supperType.id, startsAt: { gte: schedule.periodStart, lte: schedule.periodEnd } } });
     const oldDate = dateKey(supper.startsAt);
     const newDate = dateKey(input.startsAt);
-    if (oldDate !== newDate) {
-      const targetStart = new Date(`${newDate}T00:00:00-03:00`);
-      const targetEnd = new Date(targetStart.getTime() + 24 * 60 * 60 * 1000);
-      const [targetSunday, oldSunday] = await Promise.all([
-        prisma.event.findFirst({ where: { churchId: currentChurch.id, eventTypeId: sundayType.id, startsAt: { gte: targetStart, lt: targetEnd } } }),
-        prisma.event.findFirst({ where: { churchId: currentChurch.id, eventTypeId: sundayType.id, startsAt: { gte: new Date(`${oldDate}T00:00:00-03:00`), lt: new Date(`${oldDate}T23:59:59-03:00`) } } })
-      ]);
-      await prisma.$transaction(async tx => {
-        if (targetSunday) await tx.event.delete({ where: { id: targetSunday.id } });
-        await tx.event.update({ where: { id: supper.id }, data: { startsAt: input.startsAt, visibleInSchedule: true } });
-        const oldDayIsSunday = new Date(`${oldDate}T12:00:00-03:00`).getUTCDay() === 0;
-        if (oldDayIsSunday && !oldSunday) {
-          const restored = await tx.event.create({ data: { churchId: currentChurch.id, eventTypeId: sundayType.id, title: sundayType.name, startsAt: new Date(`${oldDate}T${sundayType.defaultTime ?? "18:00"}:00-03:00`), visibleInSchedule: true } });
-          await tx.eventRequirement.createMany({ data: sundayType.stations.filter(position => position.enabled).map(position => ({ eventId: restored.id, stationId: position.stationId, quantity: position.quantity, required: true })) });
-        }
-      });
-    } else {
-      await prisma.event.update({ where: { id: supper.id }, data: { startsAt: input.startsAt, visibleInSchedule: true } });
-    }
+    const dayRange = (day: string) => ({ gte: new Date(`${day}T00:00:00-03:00`), lt: new Date(new Date(`${day}T00:00:00-03:00`).getTime() + 24 * 60 * 60 * 1000) });
+    const [regularOnTarget, regularOnSource] = await Promise.all([
+      prisma.event.findFirst({ where: { churchId: currentChurch.id, id: { not: supper.id }, eventTypeId: { not: supperType.id }, startsAt: dayRange(newDate) } }),
+      prisma.event.findFirst({ where: { churchId: currentChurch.id, id: { not: supper.id }, eventTypeId: { not: supperType.id }, startsAt: dayRange(oldDate) } })
+    ]);
+    const sourceType = eventTypes.find(eventType => eventType.id === supper.replacedEventTypeId)
+      ?? eventTypes.find(eventType => eventType.code !== "SANTA_CEIA" && eventType.weekday === weekdayAtChurch(supper.startsAt));
+    const targetType = eventTypes.find(eventType => eventType.id === regularOnTarget?.eventTypeId)
+      ?? eventTypes.find(eventType => eventType.code !== "SANTA_CEIA" && eventType.weekday === weekdayAtChurch(input.startsAt));
+    await prisma.$transaction(async tx => {
+      if (regularOnTarget) await tx.event.delete({ where: { id: regularOnTarget.id } });
+      await tx.event.update({ where: { id: supper.id }, data: { startsAt: input.startsAt, title: supperType.name, visibleInSchedule: true, replacedEventTypeId: targetType?.id ?? null } });
+      if (oldDate !== newDate && sourceType && !regularOnSource) {
+        const restored = await tx.event.create({ data: { churchId: currentChurch.id, eventTypeId: sourceType.id, title: sourceType.name, startsAt: new Date(`${oldDate}T${sourceType.defaultTime ?? "18:00"}:00-03:00`), visibleInSchedule: true } });
+        await tx.eventRequirement.createMany({ data: sourceType.stations.filter(position => position.enabled).map(position => ({ eventId: restored.id, stationId: position.stationId, quantity: position.quantity, required: true })) });
+      }
+    });
     res.json(await prisma.event.findUniqueOrThrow({ where: { id: supper.id }, include: { eventType: true, requirements: { include: { station: true }, orderBy: { station: { sortOrder: "asc" } } } } }));
   } catch (error) { next(error); }
 });

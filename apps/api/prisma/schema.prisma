@@ -151,6 +151,7 @@ model Event {
   endsAt      DateTime?
   canceled    Boolean @default(false)
   visibleInSchedule Boolean @default(true)
+  replacedEventTypeId String?
   notes       String?
   church      Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
   eventType   EventType @relation(fields: [eventTypeId], references: [id])
