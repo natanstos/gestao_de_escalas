@@ -811,6 +811,7 @@ function SchedulePage({
     currentName: string;
   } | null>(null);
   const [confirmGenerate, setConfirmGenerate] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [validation, setValidation] = useState<{
     valid: boolean;
     summary: { errors: number; warnings: number; locked: number };
@@ -862,8 +863,10 @@ function SchedulePage({
     }
   };
   const regenerate = async () => {
+    if (isGenerating) return;
     if (!scheduleId)
       return announce("A escala ainda não foi carregada do servidor.");
+    setIsGenerating(true);
     try {
       const response = await fetch(`/api/schedules/${scheduleId}/regenerate`, {
         method: "POST",
@@ -880,6 +883,8 @@ function SchedulePage({
           ? error.message
           : "Não foi possível gerar a escala. Tente novamente.",
       );
+    } finally {
+      setIsGenerating(false);
     }
   };
   const reviewBeforeGenerate = async () => {
@@ -1268,14 +1273,33 @@ function SchedulePage({
             <div className="modal-actions">
               <button
                 className="ghost"
+                disabled={isGenerating}
                 onClick={() => setConfirmGenerate(false)}
               >
                 Cancelar
               </button>
-              <button className="primary" onClick={regenerate}>
-                Gerar e criar nova versão
+              <button
+                className="primary generate-button"
+                onClick={regenerate}
+                disabled={isGenerating}
+                aria-busy={isGenerating}
+              >
+                {isGenerating ? (
+                  <>
+                    <RefreshCw className="loading-spinner" size={17} />
+                    Gerando escala...
+                  </>
+                ) : (
+                  "Gerar e criar nova versão"
+                )}
               </button>
             </div>
+            {isGenerating && (
+              <p className="generation-progress" role="status">
+                Aguarde. A distribuição está sendo calculada e salva no
+                servidor.
+              </p>
+            )}
           </section>
         </div>
       )}
