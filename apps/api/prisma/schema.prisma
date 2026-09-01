@@ -196,6 +196,7 @@ model Schedule {
   church      Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
   assignments Assignment[]
   revisions   ScheduleRevision[]
+  @@unique([churchId, periodStart])
 }
 
 model ScheduleRevision {
