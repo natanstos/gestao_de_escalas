@@ -23,6 +23,35 @@ const isWorkerAvailable = (worker: { active: boolean; temporarilyUnavailable: bo
   return matchesMode && !unavailable;
 };
 
+const assignmentSnapshot = (assignments: Array<{ eventId: string; stationId: string; workerId: string; origin: string; locked: boolean; status: string; notes: string | null }>) =>
+  assignments.map(({ eventId, stationId, workerId, origin, locked, status, notes }) => ({ eventId, stationId, workerId, origin, locked, status, notes }));
+
+async function validateSchedule(scheduleId: string, churchId: string) {
+  const schedule = await prisma.schedule.findFirstOrThrow({ where: { id: scheduleId, churchId }, include: scheduleInclude });
+  const [workers, events] = await Promise.all([
+    prisma.worker.findMany({ where: { churchId, active: true }, include: { role: true, availability: true } }),
+    prisma.event.findMany({ where: { churchId, startsAt: { gte: schedule.periodStart, lte: schedule.periodEnd }, canceled: false, visibleInSchedule: true }, include: { eventType: true, requirements: { include: { station: true } } }, orderBy: { startsAt: "asc" } })
+  ]);
+  const issues: Array<{ severity: "error" | "warning" | "info"; code: string; title: string; detail: string; eventId?: string }> = [];
+  for (const event of events) {
+    const assigned = schedule.assignments.filter(item => item.eventId === event.id);
+    for (const requirement of event.requirements) {
+      const filled = assigned.filter(item => item.stationId === requirement.stationId).length;
+      if (filled < requirement.quantity) issues.push({ severity: "error", code: "OPEN_SLOT", title: `Faltam ${requirement.quantity - filled} em ${requirement.station.name}`, detail: `${event.title} em ${dateKey(event.startsAt)} não está completo.`, eventId: event.id });
+      const eligible = workers.filter(worker => isWorkerAvailable(worker, event.startsAt) && (event.eventType.code !== "SANTA_CEIA" || worker.role.name === "Auxiliar"));
+      if (eligible.length < requirement.quantity) issues.push({ severity: "error", code: "INSUFFICIENT_WORKERS", title: "Poucos obreiros elegíveis", detail: `${event.title}: ${eligible.length} disponíveis para ${requirement.quantity} vaga(s) em ${requirement.station.name}.`, eventId: event.id });
+    }
+    for (const assignment of assigned) {
+      const worker = workers.find(item => item.id === assignment.workerId);
+      if (!worker || !isWorkerAvailable(worker, event.startsAt)) issues.push({ severity: "error", code: "UNAVAILABLE_WORKER", title: "Obreiro indisponível", detail: `${assignment.worker.displayName} está alocado em ${event.title}, mas não está disponível nessa data.`, eventId: event.id });
+      if (event.eventType.code === "SANTA_CEIA" && assignment.worker.role.name !== "Auxiliar") issues.push({ severity: "error", code: "INVALID_ROLE", title: "Função incompatível", detail: `${assignment.worker.displayName} não é Auxiliar e está na Santa Ceia.`, eventId: event.id });
+    }
+  }
+  const locked = schedule.assignments.filter(item => item.locked).length;
+  issues.push({ severity: "info", code: "LOCKED_ASSIGNMENTS", title: `${locked} alocação(ões) protegida(s)`, detail: "Esses nomes serão mantidos ao gerar novamente." });
+  return { valid: !issues.some(issue => issue.severity === "error"), summary: { errors: issues.filter(i => i.severity === "error").length, warnings: issues.filter(i => i.severity === "warning").length, locked }, issues };
+}
+
 app.get("/api/health", (_req, res) => res.json({ status: "ok", service: "gestao-de-escalas" }));
 
 app.get("/api/dashboard", async (_req, res, next) => {
@@ -188,7 +217,16 @@ app.patch("/api/assignments/:id", async (req, res, next) => {
     if (assignment.event.eventType.code === "SANTA_CEIA" && worker.role.name !== "Auxiliar") return res.status(409).json({ message: "Na Santa Ceia, somente auxiliares podem ser escalados." });
     const alreadyAssigned = await prisma.assignment.findFirst({ where: { scheduleId: assignment.scheduleId, eventId: assignment.eventId, workerId: worker.id, id: { not: assignment.id } } });
     if (alreadyAssigned) return res.status(409).json({ message: "O obreiro já está escalado neste culto." });
-    res.json(await prisma.assignment.update({ where: { id: assignment.id }, data: { workerId: worker.id, origin: "MANUAL", status: "PENDING" }, include: { worker: { include: { role: true } }, station: true, event: { include: { eventType: true } } } }));
+    res.json(await prisma.assignment.update({ where: { id: assignment.id }, data: { workerId: worker.id, origin: "MANUAL", locked: true, status: "PENDING" }, include: { worker: { include: { role: true } }, station: true, event: { include: { eventType: true } } } }));
+  } catch (error) { next(error); }
+});
+
+app.patch("/api/assignments/:id/lock", async (req, res, next) => {
+  try {
+    const currentChurch = await church();
+    const input = z.object({ locked: z.boolean() }).parse(req.body);
+    const assignment = await prisma.assignment.findFirstOrThrow({ where: { id: req.params.id, schedule: { churchId: currentChurch.id } } });
+    res.json(await prisma.assignment.update({ where: { id: assignment.id }, data: { locked: input.locked } }));
   } catch (error) { next(error); }
 });
 
@@ -250,34 +288,65 @@ app.post("/api/schedules/:id/regenerate", async (req, res, next) => {
       include: { eventType: true, requirements: { include: { station: true }, orderBy: { station: { sortOrder: "asc" } } } },
       orderBy: { startsAt: "asc" }
     });
+    const lockedAssignments = schedule.assignments.filter(item => item.locked);
     const counts = new Map<string, number>();
-    schedule.assignments.forEach(item => counts.set(item.workerId, (counts.get(item.workerId) ?? 0) + 1));
-    const nextAssignments: Array<{ scheduleId: string; eventId: string; stationId: string; workerId: string; origin: string; status: "PENDING"; notes: string | null }> = [];
+    lockedAssignments.forEach(item => counts.set(item.workerId, (counts.get(item.workerId) ?? 0) + 1));
+    const nextAssignments: Array<{ scheduleId: string; eventId: string; stationId: string; workerId: string; origin: string; locked: boolean; status: "PENDING"; notes: string | null }> = [];
     for (const event of events) {
-      const selectedWorkers = new Set<string>();
+      const selectedWorkers = new Set(lockedAssignments.filter(item => item.eventId === event.id).map(item => item.workerId));
       for (const requirement of event.requirements) {
-        const currentSlots = schedule.assignments.filter(item => item.eventId === event.id && item.stationId === requirement.stationId);
-        for (let slot = 0; slot < requirement.quantity; slot += 1) {
-          const currentWorkerId = currentSlots[slot]?.workerId;
+        const protectedSlots = lockedAssignments.filter(item => item.eventId === event.id && item.stationId === requirement.stationId);
+        for (let slot = protectedSlots.length; slot < requirement.quantity; slot += 1) {
           const eligibleWorkers = workers.filter(worker => {
             const allowedRole = event.eventType.code !== "SANTA_CEIA" || worker.role.name === "Auxiliar";
             return allowedRole && isWorkerAvailable(worker, event.startsAt) && !selectedWorkers.has(worker.id);
           }).sort((a, b) => (counts.get(a.id) ?? 0) - (counts.get(b.id) ?? 0) || a.displayName.localeCompare(b.displayName));
-          const selected = eligibleWorkers.find(worker => worker.id !== currentWorkerId) ?? eligibleWorkers[0];
+          const selected = eligibleWorkers[0];
           if (!selected) throw new Error(`Nenhum obreiro elegível para o posto ${requirement.station.name} em ${event.title}.`);
           selectedWorkers.add(selected.id);
           counts.set(selected.id, (counts.get(selected.id) ?? 0) + 1);
-          nextAssignments.push({ scheduleId: schedule.id, eventId: event.id, stationId: requirement.stationId, workerId: selected.id, origin: "AUTOMATIC", status: "PENDING", notes: null });
+          nextAssignments.push({ scheduleId: schedule.id, eventId: event.id, stationId: requirement.stationId, workerId: selected.id, origin: "AUTOMATIC", locked: false, status: "PENDING", notes: null });
         }
       }
     }
     await prisma.$transaction(async tx => {
-      await tx.assignment.deleteMany({ where: { scheduleId: schedule.id } });
+      await tx.scheduleRevision.create({ data: { scheduleId: schedule.id, version: schedule.version, reason: "Antes de gerar novamente", snapshot: assignmentSnapshot(schedule.assignments) as Prisma.InputJsonValue } });
+      await tx.assignment.deleteMany({ where: { scheduleId: schedule.id, locked: false } });
       await tx.assignment.createMany({ data: nextAssignments });
+      await tx.schedule.update({ where: { id: schedule.id }, data: { version: { increment: 1 }, status: ScheduleStatus.REVIEW } });
     });
     const regeneratedSchedule = await prisma.schedule.findUniqueOrThrow({ where: { id: schedule.id }, include: scheduleInclude });
     const allEvents = await prisma.event.findMany({ where: { churchId: currentChurch.id, startsAt: { gte: schedule.periodStart, lte: schedule.periodEnd }, canceled: false }, include: { eventType: true, requirements: { include: { station: true }, orderBy: { station: { sortOrder: "asc" } } } }, orderBy: { startsAt: "asc" } });
     res.json({ schedule: regeneratedSchedule, events: allEvents });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/schedules/:id/validate", async (req, res, next) => {
+  try { const currentChurch = await church(); res.json(await validateSchedule(req.params.id, currentChurch.id)); }
+  catch (error) { next(error); }
+});
+
+app.get("/api/schedules/:id/revisions", async (req, res, next) => {
+  try {
+    const currentChurch = await church();
+    await prisma.schedule.findFirstOrThrow({ where: { id: req.params.id, churchId: currentChurch.id } });
+    res.json(await prisma.scheduleRevision.findMany({ where: { scheduleId: req.params.id }, select: { id: true, version: true, reason: true, createdAt: true }, orderBy: { version: "desc" } }));
+  } catch (error) { next(error); }
+});
+
+app.post("/api/schedules/:id/revisions/:revisionId/restore", async (req, res, next) => {
+  try {
+    const currentChurch = await church();
+    const schedule = await prisma.schedule.findFirstOrThrow({ where: { id: req.params.id, churchId: currentChurch.id }, include: scheduleInclude });
+    const revision = await prisma.scheduleRevision.findFirstOrThrow({ where: { id: req.params.revisionId, scheduleId: schedule.id } });
+    const snapshot = z.array(z.object({ eventId: z.string(), stationId: z.string(), workerId: z.string(), origin: z.string(), locked: z.boolean().default(false), status: z.enum(["PENDING", "CONFIRMED", "DECLINED", "REPLACED", "PRESENT", "ABSENT"]), notes: z.string().nullable() })).parse(revision.snapshot);
+    await prisma.$transaction(async tx => {
+      await tx.scheduleRevision.create({ data: { scheduleId: schedule.id, version: schedule.version, reason: `Antes de restaurar a versão ${revision.version}`, snapshot: assignmentSnapshot(schedule.assignments) as Prisma.InputJsonValue } });
+      await tx.assignment.deleteMany({ where: { scheduleId: schedule.id } });
+      await tx.assignment.createMany({ data: snapshot.map(item => ({ ...item, scheduleId: schedule.id })) });
+      await tx.schedule.update({ where: { id: schedule.id }, data: { version: { increment: 1 }, status: ScheduleStatus.REVIEW } });
+    });
+    res.json(await prisma.schedule.findUniqueOrThrow({ where: { id: schedule.id }, include: scheduleInclude }));
   } catch (error) { next(error); }
 });
 

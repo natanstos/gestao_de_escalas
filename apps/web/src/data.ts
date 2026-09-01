@@ -1,4 +1,4 @@
-export type AssignmentSlot = { id: string; workerId: string; name: string };
+export type AssignmentSlot = { id: string; workerId: string; name: string; locked?: boolean };
 export type Assignment = { station: string; names: string[]; slots?: AssignmentSlot[]; status?: "confirmed" | "pending" | "open" };
 export type Service = { id: number | string; weekday: string; date: string; isoDate?: string; time: string; title: string; color: string; eventCode?: string; visible?: boolean; assignments: Assignment[] };
 

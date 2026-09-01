@@ -195,6 +195,19 @@ model Schedule {
   createdAt   DateTime @default(now())
   church      Church @relation(fields: [churchId], references: [id], onDelete: Cascade)
   assignments Assignment[]
+  revisions   ScheduleRevision[]
+}
+
+model ScheduleRevision {
+  id          String   @id @default(uuid())
+  scheduleId  String
+  version     Int
+  reason      String
+  snapshot    Json
+  createdAt   DateTime @default(now())
+  schedule    Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  @@unique([scheduleId, version])
+  @@index([scheduleId, createdAt])
 }
 
 model Assignment {
@@ -204,6 +217,7 @@ model Assignment {
   stationId  String
   workerId   String
   origin     String @default("AUTOMATIC")
+  locked     Boolean @default(false)
   status     AssignmentStatus @default(PENDING)
   notes      String?
   schedule   Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
