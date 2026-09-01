@@ -73,6 +73,15 @@ const isWorkerAvailable = (
   );
   return matchesMode && !unavailable;
 };
+const workerPreferenceScore = (
+  worker: { preferredWeekdays: number[]; preferredDates: Date[] },
+  startsAt: Date,
+) => {
+  if (worker.preferredDates.some((date) => dateKey(date) === dateKey(startsAt)))
+    return 2;
+  if (worker.preferredWeekdays.includes(weekdayAtChurch(startsAt))) return 1;
+  return 0;
+};
 
 const assignmentSnapshot = (
   assignments: Array<{
@@ -415,6 +424,11 @@ const workerInput = z.object({
     .optional()
     .default([]),
   availableDates: z.array(z.coerce.date()).optional().default([]),
+  preferredWeekdays: z
+    .array(z.number().int().min(0).max(6))
+    .optional()
+    .default([]),
+  preferredDates: z.array(z.coerce.date()).optional().default([]),
   temporarilyUnavailable: z.boolean().optional().default(false),
 });
 
@@ -436,6 +450,8 @@ app.post("/api/workers", async (req, res, next) => {
         availabilityMode: input.availabilityMode,
         availableWeekdays: input.availableWeekdays,
         availableDates: input.availableDates,
+        preferredWeekdays: input.preferredWeekdays,
+        preferredDates: input.preferredDates,
         temporarilyUnavailable: input.temporarilyUnavailable,
       },
       include: { role: true, _count: { select: { assignments: true } } },
@@ -479,6 +495,8 @@ app.patch("/api/workers/:id", async (req, res, next) => {
           availabilityMode: input.availabilityMode,
           availableWeekdays: input.availableWeekdays,
           availableDates: input.availableDates,
+          preferredWeekdays: input.preferredWeekdays,
+          preferredDates: input.preferredDates,
           temporarilyUnavailable: input.temporarilyUnavailable,
         },
         include: { role: true, _count: { select: { assignments: true } } },
@@ -1059,6 +1077,8 @@ app.post("/api/schedules/:id/regenerate", async (req, res, next) => {
             })
             .sort(
               (a, b) =>
+                workerPreferenceScore(b, event.startsAt) -
+                  workerPreferenceScore(a, event.startsAt) ||
                 (counts.get(a.id) ?? 0) - (counts.get(b.id) ?? 0) ||
                 a.displayName.localeCompare(b.displayName),
             );

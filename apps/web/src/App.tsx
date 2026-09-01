@@ -53,6 +53,8 @@ type WorkerItem = {
   availabilityMode: AvailabilityMode;
   availableWeekdays: number[];
   availableDates: string[];
+  preferredWeekdays: number[];
+  preferredDates: string[];
   temporarilyUnavailable: boolean;
 };
 const initialWorkers: WorkerItem[] = [
@@ -66,6 +68,8 @@ const initialWorkers: WorkerItem[] = [
     availabilityMode: "ALL",
     availableWeekdays: [],
     availableDates: [],
+    preferredWeekdays: [],
+    preferredDates: [],
     temporarilyUnavailable: false,
   },
 ];
@@ -132,6 +136,8 @@ type ApiWorker = {
   availabilityMode: AvailabilityMode;
   availableWeekdays: number[];
   availableDates: string[];
+  preferredWeekdays: number[];
+  preferredDates: string[];
   temporarilyUnavailable: boolean;
   role: { name: string };
   _count: { assignments: number };
@@ -166,6 +172,8 @@ const mapWorker = (worker: ApiWorker): WorkerItem => ({
   availabilityMode: worker.availabilityMode,
   availableWeekdays: worker.availableWeekdays,
   availableDates: worker.availableDates.map((date) => date.slice(0, 10)),
+  preferredWeekdays: worker.preferredWeekdays,
+  preferredDates: worker.preferredDates.map((date) => date.slice(0, 10)),
   temporarilyUnavailable: worker.temporarilyUnavailable,
 });
 const mapSchedule = (
@@ -1611,6 +1619,8 @@ function WorkersPage({
     useState<AvailabilityMode>("ALL");
   const [availableDates, setAvailableDates] = useState<string[]>([]);
   const [newDate, setNewDate] = useState("");
+  const [preferredDates, setPreferredDates] = useState<string[]>([]);
+  const [newPreferredDate, setNewPreferredDate] = useState("");
   const filtered = workers.filter((worker) =>
     `${worker.name} ${worker.role}`.toLowerCase().includes(query.toLowerCase()),
   );
@@ -1633,6 +1643,10 @@ function WorkersPage({
             availabilityMode,
             availableWeekdays: form.getAll("weekdays").map(Number),
             availableDates: availableDates.map(
+              (date) => `${date}T12:00:00.000Z`,
+            ),
+            preferredWeekdays: form.getAll("preferredWeekdays").map(Number),
+            preferredDates: preferredDates.map(
               (date) => `${date}T12:00:00.000Z`,
             ),
             temporarilyUnavailable: form.get("temporarilyUnavailable") === "on",
@@ -1661,7 +1675,9 @@ function WorkersPage({
     setSelected(worker ?? null);
     setAvailabilityMode(worker?.availabilityMode ?? "ALL");
     setAvailableDates(worker?.availableDates ?? []);
+    setPreferredDates(worker?.preferredDates ?? []);
     setNewDate("");
+    setNewPreferredDate("");
     setFormOpen(true);
   };
   const weekdayOptions = [
@@ -1896,6 +1912,54 @@ function WorkersPage({
                   </small>
                 </span>
               </label>
+            </div>
+            <div className="availability-box preference-box">
+              <div>
+                <span className="eyebrow">PREFERÊNCIAS</span>
+                <h3>Em quais dias prefere servir?</h3>
+                <p className="form-help">
+                  O gerador tentará usar estes dias primeiro. Se necessário, o
+                  obreiro ainda poderá ser escalado nos demais dias em que
+                  estiver disponível.
+                </p>
+              </div>
+              <span className="preference-label">Dias da semana preferidos</span>
+              <div className="weekday-picker">
+                {weekdayOptions.map(([value, label]) => (
+                  <label key={`preferred-${value}`}>
+                    <input
+                      type="checkbox"
+                      name="preferredWeekdays"
+                      value={value}
+                      defaultChecked={selected?.preferredWeekdays.includes(value)}
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
+              </div>
+              <span className="preference-label">Datas específicas preferidas</span>
+              <div className="date-adder">
+                <input type="date" value={newPreferredDate} onChange={(event) => setNewPreferredDate(event.target.value)} />
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    if (newPreferredDate && !preferredDates.includes(newPreferredDate))
+                      setPreferredDates((current) => [...current, newPreferredDate].sort());
+                    setNewPreferredDate("");
+                  }}
+                >
+                  <Plus size={16} /> Adicionar
+                </button>
+              </div>
+              <div className="date-chips">
+                {preferredDates.map((date) => (
+                  <button type="button" key={`preferred-date-${date}`} onClick={() => setPreferredDates((current) => current.filter((item) => item !== date))}>
+                    {new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" }).format(new Date(`${date}T12:00:00Z`))}
+                    <X size={13} />
+                  </button>
+                ))}
+              </div>
             </div>
             <div className="modal-actions">
               {selected && (

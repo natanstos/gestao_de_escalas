@@ -80,6 +80,8 @@ model Worker {
   availabilityMode String @default("ALL")
   availableWeekdays Int[] @default([])
   availableDates DateTime[] @default([])
+  preferredWeekdays Int[] @default([])
+  preferredDates DateTime[] @default([])
   temporarilyUnavailable Boolean @default(false)
   monthlyMaximum Int?
   minimumGapDays Int? @default(2)
