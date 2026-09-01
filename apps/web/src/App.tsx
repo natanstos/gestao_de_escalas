@@ -43,6 +43,12 @@ const nav = [
   { id: "rules" as View, label: "Regras", icon: ShieldCheck },
 ];
 type AvailabilityMode = "ALL" | "WEEKDAYS" | "DATES";
+type WorkerPosition = {
+  stationId: string;
+  name: string;
+  enabled: boolean;
+  preferred: boolean;
+};
 type WorkerItem = {
   id: number | string;
   name: string;
@@ -56,6 +62,7 @@ type WorkerItem = {
   preferredWeekdays: number[];
   preferredDates: string[];
   temporarilyUnavailable: boolean;
+  positions: WorkerPosition[];
 };
 const initialWorkers: WorkerItem[] = [
   {
@@ -71,6 +78,7 @@ const initialWorkers: WorkerItem[] = [
     preferredWeekdays: [],
     preferredDates: [],
     temporarilyUnavailable: false,
+    positions: [],
   },
 ];
 const titles: Record<View, string> = {
@@ -141,6 +149,12 @@ type ApiWorker = {
   temporarilyUnavailable: boolean;
   role: { name: string };
   _count: { assignments: number };
+  skills?: Array<{
+    stationId: string;
+    enabled: boolean;
+    preference: number;
+    station: { name: string };
+  }>;
 };
 type StationItem = {
   id: string;
@@ -170,11 +184,17 @@ const mapWorker = (worker: ApiWorker): WorkerItem => ({
   active: worker.active,
   assignments: worker._count.assignments,
   availabilityMode: worker.availabilityMode,
-  availableWeekdays: worker.availableWeekdays,
-  availableDates: worker.availableDates.map((date) => date.slice(0, 10)),
-  preferredWeekdays: worker.preferredWeekdays,
-  preferredDates: worker.preferredDates.map((date) => date.slice(0, 10)),
+  availableWeekdays: worker.availableWeekdays ?? [],
+  availableDates: (worker.availableDates ?? []).map((date) => date.slice(0, 10)),
+  preferredWeekdays: worker.preferredWeekdays ?? [],
+  preferredDates: (worker.preferredDates ?? []).map((date) => date.slice(0, 10)),
   temporarilyUnavailable: worker.temporarilyUnavailable,
+  positions: (worker.skills ?? []).map((skill) => ({
+    stationId: skill.stationId,
+    name: skill.station.name,
+    enabled: skill.enabled,
+    preferred: skill.preference > 0,
+  })),
 });
 const mapSchedule = (
   events: ApiEvent[],
@@ -272,29 +292,25 @@ export default function App() {
   const shareRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    Promise.all([
-      fetch("/api/workers"),
-      fetch("/api/stations"),
-      fetch("/api/event-types"),
-    ])
-      .then(async ([workersResponse, stationsResponse, eventTypesResponse]) => {
-        if (
-          !workersResponse.ok ||
-          !stationsResponse.ok ||
-          !eventTypesResponse.ok
-        )
-          throw new Error("Falha ao carregar dados");
-        const apiWorkers = await workersResponse.json();
-        setStations(await stationsResponse.json());
-        setEventTypes(await eventTypesResponse.json());
-        setWorkers(apiWorkers.map(mapWorker));
-        await openMonth(currentMonthKey(), false);
+    fetch("/api/workers")
+      .then(async (response) => {
+        if (!response.ok) throw new Error();
+        setWorkers((await response.json()).map(mapWorker));
       })
-      .catch(() =>
-        announce(
-          "Não foi possível sincronizar com o servidor; exibindo dados locais.",
-        ),
-      );
+      .catch(() => announce("Não foi possível carregar os obreiros."));
+    fetch("/api/stations")
+      .then(async (response) => {
+        if (!response.ok) throw new Error();
+        setStations(await response.json());
+      })
+      .catch(() => announce("Não foi possível carregar as posições."));
+    fetch("/api/event-types")
+      .then(async (response) => {
+        if (!response.ok) throw new Error();
+        setEventTypes(await response.json());
+      })
+      .catch(() => announce("Não foi possível carregar os tipos de culto."));
+    void openMonth(currentMonthKey(), false);
   }, []);
 
   async function openMonth(month: string, notify = true) {
@@ -508,6 +524,7 @@ export default function App() {
           <WorkersPage
             workers={workers}
             setWorkers={setWorkers}
+            stations={stations}
             announce={announce}
           />
         )}
@@ -851,13 +868,18 @@ function SchedulePage({
       const response = await fetch(`/api/schedules/${scheduleId}/regenerate`, {
         method: "POST",
       });
-      if (!response.ok) throw new Error();
       const result = await response.json();
+      if (!response.ok)
+        throw new Error(result.message ?? "Não foi possível gerar a escala.");
       setServices(mapSchedule(result.events, result.schedule.assignments));
       setConfirmGenerate(false);
       announce("Nova sugestão salva no banco. Revise antes de publicar.");
-    } catch {
-      announce("Não foi possível gerar a escala. Tente novamente.");
+    } catch (error) {
+      announce(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível gerar a escala. Tente novamente.",
+      );
     }
   };
   const reviewBeforeGenerate = async () => {
@@ -1606,10 +1628,12 @@ function RulesPage({
 function WorkersPage({
   workers,
   setWorkers,
+  stations,
   announce,
 }: {
   workers: WorkerItem[];
   setWorkers: React.Dispatch<React.SetStateAction<WorkerItem[]>>;
+  stations: StationItem[];
   announce: (m: string) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -1621,6 +1645,7 @@ function WorkersPage({
   const [newDate, setNewDate] = useState("");
   const [preferredDates, setPreferredDates] = useState<string[]>([]);
   const [newPreferredDate, setNewPreferredDate] = useState("");
+  const [positions, setPositions] = useState<WorkerPosition[]>([]);
   const filtered = workers.filter((worker) =>
     `${worker.name} ${worker.role}`.toLowerCase().includes(query.toLowerCase()),
   );
@@ -1650,6 +1675,11 @@ function WorkersPage({
               (date) => `${date}T12:00:00.000Z`,
             ),
             temporarilyUnavailable: form.get("temporarilyUnavailable") === "on",
+            positions: positions.map((position) => ({
+              stationId: position.stationId,
+              enabled: position.enabled,
+              preference: position.preferred ? 1 : 0,
+            })),
           }),
         },
       );
@@ -1678,6 +1708,21 @@ function WorkersPage({
     setPreferredDates(worker?.preferredDates ?? []);
     setNewDate("");
     setNewPreferredDate("");
+    setPositions(
+      stations
+        .filter((station) => station.active)
+        .map((station) => {
+          const saved = worker?.positions.find(
+            (position) => position.stationId === station.id,
+          );
+          return {
+            stationId: station.id,
+            name: station.name,
+            enabled: saved?.enabled ?? true,
+            preferred: saved?.preferred ?? false,
+          };
+        }),
+    );
     setFormOpen(true);
   };
   const weekdayOptions = [
@@ -1958,6 +2003,61 @@ function WorkersPage({
                     {new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" }).format(new Date(`${date}T12:00:00Z`))}
                     <X size={13} />
                   </button>
+                ))}
+              </div>
+            </div>
+            <div className="availability-box position-box">
+              <div>
+                <span className="eyebrow">POSIÇÕES</span>
+                <h3>Onde este obreiro pode servir?</h3>
+                <p className="form-help">
+                  Desmarque uma posição para impedir a alocação. Marque como
+                  preferida para o gerador priorizá-la.
+                </p>
+              </div>
+              <div className="position-list">
+                {positions.map((position) => (
+                  <div className="position-option" key={position.stationId}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={position.enabled}
+                        onChange={(event) =>
+                          setPositions((current) =>
+                            current.map((item) =>
+                              item.stationId === position.stationId
+                                ? {
+                                    ...item,
+                                    enabled: event.target.checked,
+                                    preferred: event.target.checked
+                                      ? item.preferred
+                                      : false,
+                                  }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                      <strong>{position.name}</strong>
+                    </label>
+                    <label className="position-preference">
+                      <input
+                        type="checkbox"
+                        checked={position.preferred}
+                        disabled={!position.enabled}
+                        onChange={(event) =>
+                          setPositions((current) =>
+                            current.map((item) =>
+                              item.stationId === position.stationId
+                                ? { ...item, preferred: event.target.checked }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                      Preferida
+                    </label>
+                  </div>
                 ))}
               </div>
             </div>

@@ -401,7 +401,11 @@ app.get("/api/workers", async (_req, res, next) => {
     const currentChurch = await church();
     const workers = await prisma.worker.findMany({
       where: { churchId: currentChurch.id },
-      include: { role: true, _count: { select: { assignments: true } } },
+      include: {
+        role: true,
+        skills: { include: { station: true } },
+        _count: { select: { assignments: true } },
+      },
       orderBy: { displayName: "asc" },
     });
     res.json(workers);
@@ -430,6 +434,15 @@ const workerInput = z.object({
     .default([]),
   preferredDates: z.array(z.coerce.date()).optional().default([]),
   temporarilyUnavailable: z.boolean().optional().default(false),
+  positions: z
+    .array(
+      z.object({
+        stationId: z.string().uuid(),
+        enabled: z.boolean(),
+        preference: z.number().int().min(0).max(10).default(0),
+      }),
+    )
+    .optional(),
 });
 
 app.post("/api/workers", async (req, res, next) => {
@@ -454,7 +467,6 @@ app.post("/api/workers", async (req, res, next) => {
         preferredDates: input.preferredDates,
         temporarilyUnavailable: input.temporarilyUnavailable,
       },
-      include: { role: true, _count: { select: { assignments: true } } },
     });
     const stations = await prisma.station.findMany({
       where: { churchId: currentChurch.id, active: true },
@@ -463,9 +475,24 @@ app.post("/api/workers", async (req, res, next) => {
       data: stations.map((station) => ({
         workerId: worker.id,
         stationId: station.id,
+        enabled:
+          input.positions?.find((item) => item.stationId === station.id)
+            ?.enabled ?? true,
+        preference:
+          input.positions?.find((item) => item.stationId === station.id)
+            ?.preference ?? 0,
       })),
     });
-    res.status(201).json(worker);
+    res.status(201).json(
+      await prisma.worker.findUniqueOrThrow({
+        where: { id: worker.id },
+        include: {
+          role: true,
+          skills: { include: { station: true } },
+          _count: { select: { assignments: true } },
+        },
+      }),
+    );
   } catch (error) {
     next(error);
   }
@@ -483,8 +510,7 @@ app.patch("/api/workers/:id", async (req, res, next) => {
           where: { churchId: currentChurch.id, name: input.roleName },
         })
       : null;
-    res.json(
-      await prisma.worker.update({
+    await prisma.worker.update({
         where: { id: existing.id },
         data: {
           displayName: input.displayName,
@@ -499,7 +525,43 @@ app.patch("/api/workers/:id", async (req, res, next) => {
           preferredDates: input.preferredDates,
           temporarilyUnavailable: input.temporarilyUnavailable,
         },
-        include: { role: true, _count: { select: { assignments: true } } },
+      });
+    if (input.positions) {
+      const stations = await prisma.station.findMany({
+        where: {
+          churchId: currentChurch.id,
+          id: { in: input.positions.map((item) => item.stationId) },
+        },
+        select: { id: true },
+      });
+      if (stations.length !== input.positions.length)
+        throw new Error("Uma ou mais posições informadas são inválidas.");
+      await Promise.all(
+        input.positions.map((position) =>
+          prisma.workerStation.upsert({
+            where: {
+              workerId_stationId: {
+                workerId: existing.id,
+                stationId: position.stationId,
+              },
+            },
+            update: {
+              enabled: position.enabled,
+              preference: position.preference,
+            },
+            create: { workerId: existing.id, ...position },
+          }),
+        ),
+      );
+    }
+    res.json(
+      await prisma.worker.findUniqueOrThrow({
+        where: { id: existing.id },
+        include: {
+          role: true,
+          skills: { include: { station: true } },
+          _count: { select: { assignments: true } },
+        },
       }),
     );
   } catch (error) {
@@ -754,7 +816,7 @@ app.patch("/api/assignments/:id", async (req, res, next) => {
     });
     const worker = await prisma.worker.findFirstOrThrow({
       where: { id: input.workerId, churchId: currentChurch.id },
-      include: { role: true, availability: true },
+      include: { role: true, availability: true, skills: true },
     });
     if (!isWorkerAvailable(worker, assignment.event.startsAt))
       return res
@@ -1012,7 +1074,7 @@ app.post("/api/schedules/:id/regenerate", async (req, res, next) => {
     });
     const workers = await prisma.worker.findMany({
       where: { churchId: currentChurch.id, active: true },
-      include: { role: true, availability: true },
+      include: { role: true, availability: true, skills: true },
     });
     const events = await prisma.event.findMany({
       where: {
@@ -1069,14 +1131,24 @@ app.post("/api/schedules/:id/regenerate", async (req, res, next) => {
               const allowedRole =
                 event.eventType.code !== "SANTA_CEIA" ||
                 worker.role.name === "Auxiliar";
+              const stationSkill = worker.skills.find(
+                (skill) => skill.stationId === requirement.stationId,
+              );
               return (
                 allowedRole &&
+                (stationSkill?.enabled ?? true) &&
                 isWorkerAvailable(worker, event.startsAt) &&
                 !selectedWorkers.has(worker.id)
               );
             })
             .sort(
               (a, b) =>
+                (b.skills.find(
+                  (skill) => skill.stationId === requirement.stationId,
+                )?.preference ?? 0) -
+                  (a.skills.find(
+                    (skill) => skill.stationId === requirement.stationId,
+                  )?.preference ?? 0) ||
                 workerPreferenceScore(b, event.startsAt) -
                   workerPreferenceScore(a, event.startsAt) ||
                 (counts.get(a.id) ?? 0) - (counts.get(b.id) ?? 0) ||
@@ -1103,8 +1175,15 @@ app.post("/api/schedules/:id/regenerate", async (req, res, next) => {
       }
     }
     await prisma.$transaction(async (tx) => {
-      await tx.scheduleRevision.create({
-        data: {
+      await tx.scheduleRevision.upsert({
+        where: {
+          scheduleId_version: {
+            scheduleId: schedule.id,
+            version: schedule.version,
+          },
+        },
+        update: {},
+        create: {
           scheduleId: schedule.id,
           version: schedule.version,
           reason: "Antes de gerar novamente",
@@ -1121,7 +1200,7 @@ app.post("/api/schedules/:id/regenerate", async (req, res, next) => {
         where: { id: schedule.id },
         data: { version: { increment: 1 }, status: ScheduleStatus.REVIEW },
       });
-    });
+    }, { maxWait: 30_000, timeout: 180_000 });
     const regeneratedSchedule = await prisma.schedule.findUniqueOrThrow({
       where: { id: schedule.id },
       include: scheduleInclude,
