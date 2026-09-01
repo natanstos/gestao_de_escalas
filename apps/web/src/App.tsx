@@ -2222,6 +2222,15 @@ function SettingsPage({
     const response = await fetch("/api/event-types");
     if (response.ok) setEventTypes(await response.json());
   };
+  const refreshSelectedSchedule = async () => {
+    const response = await fetch(`/api/dashboard?month=${selectedMonth}`);
+    if (!response.ok) return;
+    const dashboard = await response.json();
+    if (dashboard.schedule)
+      setServices(
+        mapSchedule(dashboard.events, dashboard.schedule.assignments),
+      );
+  };
   const saveStation = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -2469,13 +2478,14 @@ function SettingsPage({
                   key={eventType.id}
                   eventType={eventType}
                   stations={stations.filter((station) => station.active)}
-                  onSaved={(saved) =>
+                  onSaved={(saved) => {
                     setEventTypes((current) =>
                       current.map((item) =>
                         item.id === saved.id ? saved : item,
                       ),
-                    )
-                  }
+                    );
+                    void refreshSelectedSchedule();
+                  }}
                   announce={announce}
                 />
               ))}
@@ -2600,7 +2610,13 @@ function EventTypePositions({
       };
     });
   const [positions, setPositions] = useState(initial);
-  useEffect(() => setPositions(initial()), [eventType, stations]);
+  const [defaultTime, setDefaultTime] = useState(
+    eventType.defaultTime ?? "18:00",
+  );
+  useEffect(() => {
+    setPositions(initial());
+    setDefaultTime(eventType.defaultTime ?? "18:00");
+  }, [eventType, stations]);
   const save = async () => {
     try {
       const response = await fetch(
@@ -2608,16 +2624,16 @@ function EventTypePositions({
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ positions }),
+          body: JSON.stringify({ positions, defaultTime }),
         },
       );
       if (!response.ok) throw new Error();
       onSaved(await response.json());
       announce(
-        `Posições de ${eventType.name} salvas. Gere novamente a escala para redistribuir.`,
+        `Horário e posições de ${eventType.name} salvos. Gere novamente a escala para redistribuir.`,
       );
     } catch {
-      announce("Não foi possível salvar as posições do culto.");
+      announce("Não foi possível salvar o horário e as posições do culto.");
     }
   };
   return (
@@ -2631,10 +2647,19 @@ function EventTypePositions({
       <div className="event-type-head">
         <div>
           <strong>{eventType.name}</strong>
-          <span>{eventType.defaultTime ?? "Horário variável"}</span>
+          <label className="event-time-field">
+            Horário
+            <input
+              type="time"
+              value={defaultTime}
+              onChange={(event) => setDefaultTime(event.target.value)}
+              required
+            />
+          </label>
         </div>
         <div>
           <button
+            type="button"
             className="text-button"
             onClick={() =>
               setPositions((current) =>
@@ -2645,6 +2670,7 @@ function EventTypePositions({
             Marcar todas
           </button>
           <button
+            type="button"
             className="text-button muted-text"
             onClick={() =>
               setPositions((current) =>
@@ -2703,8 +2729,12 @@ function EventTypePositions({
           </div>
         ))}
       </div>
-      <button className="secondary save-type-positions" onClick={save}>
-        <Save size={15} /> Salvar posições deste culto
+      <button
+        type="button"
+        className="secondary save-type-positions"
+        onClick={save}
+      >
+        <Save size={15} /> Salvar horário e posições
       </button>
     </article>
   );

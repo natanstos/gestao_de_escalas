@@ -718,6 +718,10 @@ app.put("/api/event-types/:id/stations", async (req, res, next) => {
     });
     const input = z
       .object({
+        defaultTime: z
+          .string()
+          .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+          .optional(),
         positions: z.array(
           z.object({
             stationId: z.string().min(1),
@@ -741,6 +745,28 @@ app.put("/api/event-types/:id/stations", async (req, res, next) => {
       where: { churchId: currentChurch.id, eventTypeId: eventType.id },
     });
     await prisma.$transaction(async (tx) => {
+      if (input.defaultTime) {
+        await tx.eventType.update({
+          where: { id: eventType.id },
+          data: { defaultTime: input.defaultTime },
+        });
+        const today = new Date(`${dateKey(new Date())}T00:00:00-03:00`);
+        for (const event of events.filter((item) => item.startsAt >= today)) {
+          const startsAt = new Date(
+            `${dateKey(event.startsAt)}T${input.defaultTime}:00-03:00`,
+          );
+          const duration = event.endsAt
+            ? event.endsAt.getTime() - event.startsAt.getTime()
+            : null;
+          await tx.event.update({
+            where: { id: event.id },
+            data: {
+              startsAt,
+              endsAt: duration === null ? undefined : new Date(startsAt.getTime() + duration),
+            },
+          });
+        }
+      }
       for (const position of input.positions) {
         await tx.eventTypeStation.upsert({
           where: {
@@ -789,7 +815,7 @@ app.put("/api/event-types/:id/stations", async (req, res, next) => {
           });
         }
       }
-    });
+    }, { maxWait: 30_000, timeout: 180_000 });
     res.json(
       await prisma.eventType.findUniqueOrThrow({
         where: { id: eventType.id },
